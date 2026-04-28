@@ -14,7 +14,7 @@
     rel="stylesheet"
   />
 
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="styles.css?v=2" />
 </head>
 <body>
 
@@ -43,12 +43,12 @@
 
   </div><!-- /#app -->
 
-  <!-- JS modules — order matters -->
-  <script src="data.js?v=1777406316"></script>
-  <script src="api.js?v=1777406316"></script>
-  <script src="engine.js?v=1777406316"></script>
-  <script src="ui.js?v=1777406316"></script>
-  <script src="app.js?v=1777406316"></script>
+  <!-- Load order matters: data → api → engine → ui → app -->
+  <script src="data.js?v=2"></script>
+  <script src="api.js?v=2"></script>
+  <script src="engine.js?v=2"></script>
+  <script src="ui.js?v=2"></script>
+  <script src="app.js?v=2"></script>
 
 </body>
 </html>
