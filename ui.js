@@ -1,464 +1,579 @@
 /* ============================================================
-   TASTEMATCH — engine.js
-   Scoring, filtering, variety enforcement, and result ranking.
-   Operates purely on normalised item objects from api.js.
-   No network calls. No DOM access.
+   TASTEMATCH — ui.js
+   All render functions. Builds HTML strings and injects them
+   into the DOM. No business logic, no API calls, no scoring.
+
+   Depends on: data.js (constants), engine.js (buildTasteProfile)
+   Called by:  app.js
    ============================================================ */
 
-'use strict';
 
 
 /* ------------------------------------------------------------
-   1. FILTERING
-   Remove items that fail hard requirements before scoring.
+   1. HELPERS
    ------------------------------------------------------------ */
 
 /**
- * Check whether a single item passes the maturity gate.
- * TMDB does not reliably tag every adult item, so we use a
- * conservative heuristic: if maturity is 'family', drop anything
- * with a rating below 6.0 that also has thriller/horror genres.
- *
- * AniList items are filtered at the query level (isAdult flag),
- * so this check is mainly for TMDB.
- *
- * @param  {object} item
- * @param  {string} maturity  — 'family' | 'teen' | 'adult'
- * @returns {boolean}
+ * Escape a string for safe insertion into HTML attribute values.
+ * @param  {string} str
+ * @returns {string}
  */
-function passesMaturityFilter(item, maturity) {
-  if (maturity === 'adult') return true;
+function escAttr(str) {
+  return String(str)
+    .replace(/&/g,  '&amp;')
+    .replace(/"/g,  '&quot;')
+    .replace(/'/g,  '&#39;')
+    .replace(/</g,  '&lt;')
+    .replace(/>/g,  '&gt;');
+}
 
-  if (maturity === 'family') {
-    const adultGenres = new Set([
-      TMDB_MOVIE_GENRES.horror,
-      TMDB_MOVIE_GENRES.thriller,
-      TMDB_MOVIE_GENRES.crime,
-    ]);
-    const hasAdultGenre = item.genres.some(g => adultGenres.has(g));
-    if (hasAdultGenre && (item.rating || 0) < 6.0) return false;
+/**
+ * Escape a string for safe insertion as HTML text content.
+ * @param  {string} str
+ * @returns {string}
+ */
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/**
+ * Swap the contents of a container element.
+ * Wraps the innerHTML assignment so callers stay readable.
+ * @param  {string} selector
+ * @param  {string} html
+ */
+function setHtml(selector, html) {
+  const el = document.querySelector(selector);
+  if (el) el.innerHTML = html;
+}
+
+/**
+ * Render a star rating display (text, no emoji).
+ * Returns a span string.
+ * @param  {number|null} rating  — 0 to 10
+ * @returns {string}
+ */
+function renderRating(rating) {
+  if (rating === null || rating === undefined) return '';
+  const val = parseFloat(rating).toFixed(1);
+  return `<span class="card-rating" aria-label="Rating ${val} out of 10">
+    <svg width="11" height="11" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
+      <path d="M6 1l1.39 2.82L10.5 4.27l-2.25 2.19.53 3.1L6 8.02 3.22 9.56l.53-3.1L1.5 4.27l3.11-.45z"/>
+    </svg>
+    ${escHtml(val)}
+  </span>`;
+}
+
+/**
+ * Render the poster image or fallback placeholder.
+ * @param  {object} item
+ * @returns {string}
+ */
+function renderPoster(item) {
+  if (item.poster) {
+    return `<img
+      class="card-poster"
+      src="${escAttr(item.poster)}"
+      alt="${escAttr(item.title)} poster"
+      loading="lazy"
+      onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"
+    />
+    <div class="card-poster-placeholder" style="display:none" aria-hidden="true">
+      ${POSTER_PLACEHOLDER_SVG}
+    </div>`;
+  }
+  return `<div class="card-poster-placeholder" aria-hidden="true">
+    ${POSTER_PLACEHOLDER_SVG}
+  </div>`;
+}
+
+
+/* ------------------------------------------------------------
+   2. HEADER NAV
+   ------------------------------------------------------------ */
+
+/**
+ * Render the header navigation appropriate for the current screen.
+ * @param  {'quiz'|'loading'|'results'} screen
+ * @param  {object} state
+ */
+function renderHeaderNav(screen, state) {
+  let html = '';
+
+  if (screen === 'results') {
+    const watchedCount  = state.watched.size;
+    const likedCount    = Object.values(state.feedback).filter(v => v === 'like').length;
+
+    if (watchedCount > 0) {
+      html += `<span class="nav-btn" aria-live="polite">
+        ${watchedCount} watched
+      </span>`;
+    }
+    if (likedCount > 0) {
+      html += `<span class="nav-btn active" aria-live="polite">
+        ${likedCount} liked
+      </span>`;
+    }
+    html += `<button class="nav-btn" id="nav-retake">Retake quiz</button>`;
   }
 
-  return true;
+  setHtml('#header-nav', html);
 }
 
+
+/* ------------------------------------------------------------
+   3. QUIZ SCREEN
+   ------------------------------------------------------------ */
+
 /**
- * Check whether an item passes the minimum quality threshold.
- * @param  {object} item
- * @returns {boolean}
+ * Render the progress rail above the question.
+ * @param  {number} currentIndex  — 0-based
+ * @param  {number} total
+ * @returns {string}
  */
-function passesQualityFilter(item) {
-  if ((item.rating || 0) < WEIGHTS.minRating) return false;
-  if (item.type !== 'anime' && item.votes < WEIGHTS.minVotesMovie) return false;
-  return true;
+function renderProgressRail(currentIndex, total) {
+  const segs = Array.from({ length: total }, (_, i) => {
+    let cls = 'progress-seg';
+    if (i < currentIndex)  cls += ' done';
+    if (i === currentIndex) cls += ' active';
+    return `<div class="${cls}" role="presentation"></div>`;
+  });
+  return `<div class="progress-rail" role="progressbar"
+    aria-valuenow="${currentIndex + 1}"
+    aria-valuemin="1"
+    aria-valuemax="${total}"
+    aria-label="Question ${currentIndex + 1} of ${total}">
+    ${segs.join('')}
+  </div>`;
 }
 
 /**
- * Filter a full result set against hard requirements.
- * Also removes any IDs in the watched set.
- *
- * @param  {object[]} items
- * @param  {object}   answers
+ * Render all option buttons for a question.
+ * @param  {object}   question
+ * @param  {string[]} selectedValues  — current answer array for this question
+ * @returns {string}
+ */
+function renderOptions(question, selectedValues) {
+  const selected = new Set(selectedValues);
+
+  const buttons = question.options.map(opt => {
+    const isSelected = selected.has(opt.value);
+    const ariaPressed = isSelected ? 'true' : 'false';
+
+    return `<button
+      class="opt${isSelected ? ' selected' : ''}"
+      data-value="${escAttr(opt.value)}"
+      aria-pressed="${ariaPressed}"
+    >
+      <span class="opt-indicator" aria-hidden="true"></span>
+      ${escHtml(opt.label)}
+    </button>`;
+  });
+
+  const gridClass = `options-grid ${question.cols}${question.type === 'multi' ? ' multi' : ''}`;
+
+  return `<div class="${gridClass}" role="group" aria-label="${escAttr(question.text)}">
+    ${buttons.join('\n')}
+  </div>`;
+}
+
+/**
+ * Render the full quiz screen for the current question index.
+ * @param  {number}  qIndex
+ * @param  {object}  answers  — full answers map
+ */
+function renderQuiz(qIndex, answers) {
+  const question = QUESTIONS[qIndex];
+  const current  = answers[question.id] || [];
+  const canNext  = question.type === 'multi'
+    ? current.length > 0
+    : current.length === 1;
+  const isLast   = qIndex === QUESTIONS.length - 1;
+
+  const html = `
+    <section class="quiz-wrap" aria-label="Preference quiz">
+      <h2 class="sr-only">Preference quiz — ${question.step}</h2>
+
+      ${renderProgressRail(qIndex, QUESTIONS.length)}
+
+      <p class="step-label" aria-hidden="true">${escHtml(question.step)}</p>
+      <h3 class="question-text">${escHtml(question.text)}</h3>
+
+      ${renderOptions(question, current)}
+
+      ${question.type === 'multi'
+        ? `<p class="hint-text" aria-live="polite">
+            ${current.length === 0
+              ? 'Select at least one option to continue.'
+              : `${current.length} selected`}
+           </p>`
+        : ''}
+
+      <nav class="quiz-nav" aria-label="Quiz navigation">
+        ${qIndex > 0
+          ? `<button class="btn btn-ghost" id="btn-back">Back</button>`
+          : ''}
+        <button
+          class="btn btn-primary"
+          id="btn-next"
+          ${canNext ? '' : 'disabled aria-disabled="true"'}
+        >
+          ${isLast ? 'Find my matches' : 'Next'}
+        </button>
+      </nav>
+    </section>`;
+
+  setHtml('#screen', html);
+  renderHeaderNav('quiz', {});
+}
+
+
+/* ------------------------------------------------------------
+   4. LOADING SCREEN
+   ------------------------------------------------------------ */
+
+/**
+ * Render the loading state while API calls are in flight.
+ */
+function renderLoading() {
+  const html = `
+    <section class="loading-screen" aria-label="Loading recommendations" aria-busy="true">
+      <h2 class="sr-only">Fetching your recommendations</h2>
+      <div class="loader-ring" aria-hidden="true"></div>
+      <p class="loading-title">Finding your matches</p>
+      <p class="loading-sub">Searching across movies, shows and anime — this takes a few seconds.</p>
+      <div class="loading-dots" aria-hidden="true">
+        <span></span><span></span><span></span>
+      </div>
+    </section>`;
+
+  setHtml('#screen', html);
+  renderHeaderNav('loading', {});
+}
+
+
+/* ------------------------------------------------------------
+   5. RESULTS SCREEN
+   ------------------------------------------------------------ */
+
+/**
+ * Render a single result card.
+ * @param  {object}  item
+ * @param  {object}  feedback   — full feedback map
+ * @param  {Set}     watchedIds
+ * @returns {string}
+ */
+function renderCard(item, feedback, watchedIds) {
+  const fb         = feedback[item.id] || null;
+  const isWatched  = watchedIds.has(item.id);
+  const badgeClass = TYPE_BADGE_CLASSES[item.type] || '';
+  const typeLabel  = TYPE_LABELS[item.type]        || item.type;
+
+  const metaParts = [];
+  if (item.rating !== null) metaParts.push(renderRating(item.rating));
+  if (item.year)            metaParts.push(`<span>${escHtml(item.year)}</span>`);
+
+  const scoreHtml = item.score
+    ? `<span class="badge badge-score" aria-label="Match score ${item.score} percent">${item.score}%</span>`
+    : '';
+
+  return `<article
+    class="result-card"
+    data-id="${escAttr(item.id)}"
+    aria-label="${escAttr(item.title)}"
+  >
+    <div class="card-poster-wrap">
+      ${renderPoster(item)}
+      <div class="card-badges">
+        <span class="badge ${badgeClass}">${escHtml(typeLabel)}</span>
+        ${scoreHtml}
+      </div>
+    </div>
+
+    <div class="card-body">
+      <h3 class="card-title">${escHtml(item.title)}</h3>
+
+      ${metaParts.length
+        ? `<div class="card-meta-row">${metaParts.join('<span class="divider" aria-hidden="true"></span>')}</div>`
+        : ''}
+
+      ${item.overview
+        ? `<p class="card-overview">${escHtml(item.overview)}</p>`
+        : ''}
+
+      <div class="card-actions" role="group" aria-label="Actions for ${escAttr(item.title)}">
+        <button
+          class="btn-icon${fb === 'like' ? ' active-like' : ''}"
+          data-action="like"
+          data-id="${escAttr(item.id)}"
+          aria-label="Like ${escAttr(item.title)}"
+          aria-pressed="${fb === 'like' ? 'true' : 'false'}"
+          title="Like"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="${fb === 'like' ? 'currentColor' : 'none'}"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3H14z"/>
+            <path d="M7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/>
+          </svg>
+        </button>
+
+        <button
+          class="btn-icon${isWatched ? ' active-watched' : ''}"
+          data-action="watched"
+          data-id="${escAttr(item.id)}"
+          aria-label="${isWatched ? 'Mark as unwatched' : 'Mark as watched'}: ${escAttr(item.title)}"
+          aria-pressed="${isWatched ? 'true' : 'false'}"
+          title="${isWatched ? 'Unmark watched' : 'Mark watched'}"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="${isWatched ? 'currentColor' : 'none'}"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+            <circle cx="12" cy="12" r="3"/>
+          </svg>
+        </button>
+
+        <button
+          class="btn-icon${fb === 'dislike' ? ' active-dislike' : ''}"
+          data-action="dislike"
+          data-id="${escAttr(item.id)}"
+          aria-label="Dislike ${escAttr(item.title)}"
+          aria-pressed="${fb === 'dislike' ? 'true' : 'false'}"
+          title="Not for me"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="${fb === 'dislike' ? 'currentColor' : 'none'}"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3H10z"/>
+            <path d="M17 2h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </article>`;
+}
+
+/**
+ * Render the taste profile strip from quiz answers.
+ * @param  {object} answers
+ * @returns {string}
+ */
+function renderTasteStrip(answers) {
+  const chips = buildTasteProfile(answers);
+  if (!chips.length) return '';
+
+  const chipHtml = chips.map(c => `
+    <div class="taste-chip">
+      <span class="taste-chip-label">${escHtml(c.label)}</span>
+      <span class="taste-chip-value">${escHtml(c.value)}</span>
+    </div>`).join('');
+
+  return `<div class="taste-strip" aria-label="Your taste profile">
+    ${chipHtml}
+  </div>`;
+}
+
+/**
+ * Render the filter tab bar.
+ * Only shows tabs for types that exist in the result set.
+ * @param  {object[]} allResults
+ * @param  {string}   activeFilter
+ * @returns {string}
+ */
+function renderFilterTabs(allResults, activeFilter) {
+  const presentTypes = new Set(allResults.map(r => r.type));
+
+  const tabs = [
+    { key: 'all',   label: 'All' },
+    { key: 'movie', label: 'Movies' },
+    { key: 'tv',    label: 'TV Shows' },
+    { key: 'anime', label: 'Anime' },
+  ].filter(t => t.key === 'all' || presentTypes.has(t.key));
+
+  if (tabs.length <= 2) return ''; /* Only one type — tabs add no value */
+
+  const tabHtml = tabs.map(t => `
+    <button
+      class="filter-tab${activeFilter === t.key ? ' active' : ''}"
+      data-filter="${escAttr(t.key)}"
+      aria-pressed="${activeFilter === t.key ? 'true' : 'false'}"
+    >${escHtml(t.label)}</button>`).join('');
+
+  return `<div class="filter-row" role="group" aria-label="Filter by content type">
+    ${tabHtml}
+  </div>`;
+}
+
+/**
+ * Render the error banner (shown alongside results, not instead of).
+ * @param  {string|null} errorMsg
+ * @returns {string}
+ */
+function renderErrorBanner(errorMsg) {
+  if (!errorMsg) return '';
+  return `<div class="error-banner" role="alert">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="10"/>
+      <line x1="12" y1="8" x2="12" y2="12"/>
+      <line x1="12" y1="16" x2="12.01" y2="16"/>
+    </svg>
+    ${escHtml(errorMsg)}
+  </div>`;
+}
+
+/**
+ * Render the results grid.
+ * Filters by active tab, excludes watched items.
+ * @param  {object[]} results
+ * @param  {string}   activeFilter
+ * @param  {object}   feedback
  * @param  {Set}      watchedIds
- * @returns {object[]}
+ * @returns {string}
  */
-function applyHardFilters(items, answers, watchedIds) {
-  const maturity = answers.maturity || 'teen';
-
-  return items.filter(item => {
-    if (watchedIds.has(item.id))             return false;
-    if (!passesQualityFilter(item))          return false;
-    if (!passesMaturityFilter(item, maturity)) return false;
+function renderResultsGrid(results, activeFilter, feedback, watchedIds) {
+  const visible = results.filter(r => {
+    if (watchedIds.has(r.id))                          return false;
+    if (activeFilter !== 'all' && r.type !== activeFilter) return false;
     return true;
   });
+
+  if (!visible.length) {
+    return `<div class="empty-state" role="status">
+      <p class="empty-state-title">Nothing here yet</p>
+      <p>Try a different filter, or load more results below.</p>
+    </div>`;
+  }
+
+  const cards = visible
+    .map(item => renderCard(item, feedback, watchedIds))
+    .join('\n');
+
+  return `<div class="results-grid" role="list" aria-label="Recommendations">
+    ${cards}
+  </div>`;
+}
+
+/**
+ * Render the full results screen.
+ * @param  {object} state  — full app state object
+ */
+function renderResults(state) {
+  const { results, answers, feedback, watched, activeFilter, error, loadingMore } = state;
+
+  const totalVisible = results.filter(r => {
+    if (watched.has(r.id)) return false;
+    if (activeFilter !== 'all' && r.type !== activeFilter) return false;
+    return true;
+  }).length;
+
+  const html = `
+    <section aria-label="Your recommendations">
+      <h2 class="sr-only">Recommendations</h2>
+
+      <header class="results-header">
+        <h2 class="results-title">Your <em>matches</em></h2>
+        <p class="results-meta">
+          ${results.length} titles found
+          ${totalVisible !== results.length ? ` &mdash; ${totalVisible} visible` : ''}
+        </p>
+      </header>
+
+      ${renderTasteStrip(answers)}
+      ${renderErrorBanner(error)}
+      ${renderFilterTabs(results, activeFilter)}
+      ${renderResultsGrid(results, activeFilter, feedback, watched)}
+
+      <footer class="results-footer">
+        <button class="btn btn-primary" id="btn-retake">Retake quiz</button>
+        <button class="btn btn-ghost" id="btn-load-more" ${loadingMore ? 'disabled aria-disabled="true"' : ''}>
+          ${loadingMore ? 'Loading...' : 'Load more'}
+        </button>
+        <button class="btn btn-outline" id="btn-surprise">
+          Surprise me
+        </button>
+      </footer>
+    </section>`;
+
+  setHtml('#screen', html);
+  renderHeaderNav('results', state);
 }
 
 
 /* ------------------------------------------------------------
-   2. SCORING
-   Assigns a 0–100 match score to each item based on how well
-   it aligns with the user's quiz answers and feedback history.
+   6. PARTIAL UPDATES
+   These avoid a full re-render when only one part of the
+   results screen changes (e.g. a single card's action buttons).
    ------------------------------------------------------------ */
 
 /**
- * Score how well an item's genres overlap with the user's
- * selected genre answers.
- * TMDB items carry genre_ids; anime items carry genre strings.
- * We work with TMDB IDs for movies/TV and string matching for anime.
- *
- * @param  {object}   item
- * @param  {string[]} selectedGenres  — quiz answer values
- * @returns {number}
- */
-function scoreGenreMatch(item, selectedGenres) {
-  if (!selectedGenres.length) return 0;
-
-  let bonus = 0;
-
-  if (item.type === 'anime') {
-    /* item.genres is a string[] from AniList */
-    const itemGenreSet = new Set(item.genres.map(g => g.toLowerCase()));
-    for (const answer of selectedGenres) {
-      const aniGenres = GENRE_TO_ANILIST[answer] || [];
-      if (aniGenres.some(g => itemGenreSet.has(g.toLowerCase()))) {
-        bonus += WEIGHTS.genreMatchBonus;
-      }
-    }
-  } else {
-    /* item.genres is a number[] of TMDB IDs */
-    const map = item.type === 'movie' ? GENRE_TO_TMDB_MOVIE : GENRE_TO_TMDB_TV;
-    const itemGenreSet = new Set(item.genres);
-    for (const answer of selectedGenres) {
-      const tmdbIds = map[answer] || [];
-      if (tmdbIds.some(id => itemGenreSet.has(id))) {
-        bonus += WEIGHTS.genreMatchBonus;
-      }
-    }
-  }
-
-  return Math.min(bonus, WEIGHTS.genreMatchMax);
-}
-
-/**
- * Score how well an item's overview text matches the mood.
- * This is a lightweight keyword scan — not NLP.
- *
- * @param  {object} item
- * @param  {string} mood  — quiz answer value
- * @returns {number}
- */
-function scoreMoodMatch(item, mood) {
-  if (!mood) return 0;
-  const keywords = MOOD_KEYWORDS[mood];
-  if (!keywords || !item.overview) return 0;
-
-  const text = item.overview.toLowerCase();
-  const hits  = keywords.filter(kw => text.includes(kw)).length;
-  if (hits === 0) return 0;
-
-  /* Diminishing returns: 1 hit = 1×, 2 hits = 1.5×, 3+ = 2× */
-  const multiplier = hits === 1 ? 1 : hits === 2 ? 1.5 : 2;
-  return Math.round(WEIGHTS.moodKeywordBonus * multiplier);
-}
-
-/**
- * Score the item's raw rating contribution.
- * Maps a 0-10 rating to roughly 0-60 points.
- *
- * @param  {object} item
- * @returns {number}
- */
-function scoreRating(item) {
-  return (item.rawScore || 0) * WEIGHTS.ratingMultiplier;
-}
-
-/**
- * Apply vibe-mode adjustments.
- *
- * @param  {object} item
- * @param  {string} vibe
- * @returns {number}
- */
-function scoreVibe(item, vibe) {
-  if (!vibe) return 0;
-
-  switch (vibe) {
-    case 'popular':
-      /* Bonus for high TMDB popularity score.
-         Popularity can be in the thousands; we cap contribution. */
-      return Math.min(item.popularity / 100, WEIGHTS.vibePopularBonus);
-
-    case 'hidden':
-      /* Reward well-rated items that aren't super popular */
-      if ((item.rawScore || 0) >= WEIGHTS.vibeHiddenThreshold) {
-        const obscurityBonus = item.popularity < 20 ? 8 : 0;
-        return WEIGHTS.vibeHiddenBonus + obscurityBonus;
-      }
-      return 0;
-
-    case 'surprise':
-      /* Inject randomness so results feel shuffled each time */
-      return Math.random() * WEIGHTS.vibeSurpriseRandom;
-
-    case 'quality':
-    default:
-      return 0;
-  }
-}
-
-/**
- * Apply feedback adjustments from a previous session or
- * within-session like/dislike actions.
- *
+ * Re-render a single card in place by its data-id attribute.
+ * Falls back to a full results re-render if the card is not found.
+ * @param  {string}  id
  * @param  {object}  item
- * @param  {object}  feedback  — map of id → 'like' | 'dislike' | null
- * @returns {number}
+ * @param  {object}  feedback
+ * @param  {Set}     watchedIds
+ * @param  {object}  state       — passed for full fallback
  */
-function scoreFeedback(item, feedback) {
-  const fb = feedback[item.id];
-  if (fb === 'like')    return  WEIGHTS.likeBonus;
-  if (fb === 'dislike') return -WEIGHTS.dislikePenalty;
-  return 0;
-}
-
-/**
- * Calculate the final match score for a single item.
- * Score is clamped to [1, 99].
- *
- * @param  {object} item
- * @param  {object} answers
- * @param  {object} feedback
- * @returns {number}
- */
-function calculateScore(item, answers, feedback) {
-  const selectedGenres = answers.genres || [];
-  const mood           = answers.mood   || null;
-  const vibe           = answers.vibe   || 'quality';
-
-  const base     = scoreRating(item);
-  const genre    = scoreGenreMatch(item, selectedGenres);
-  const moodBonus = scoreMoodMatch(item, mood);
-  const vibeBonus = scoreVibe(item, vibe);
-  const fbAdjust  = scoreFeedback(item, feedback);
-
-  const raw = base + genre + moodBonus + vibeBonus + fbAdjust;
-  return Math.max(1, Math.min(99, Math.round(raw)));
-}
-
-/**
- * Score an entire array of items in place, attaching a `score`
- * property to each. Returns the same array.
- *
- * @param  {object[]} items
- * @param  {object}   answers
- * @param  {object}   feedback
- * @returns {object[]}
- */
-function scoreAll(items, answers, feedback) {
-  for (const item of items) {
-    item.score = calculateScore(item, answers, feedback);
-  }
-  return items;
-}
-
-
-/* ------------------------------------------------------------
-   3. SORTING
-   ------------------------------------------------------------ */
-
-/**
- * Sort items by score descending, with popularity as a
- * tie-breaker to ensure deterministic ordering.
- *
- * @param  {object[]} items — already scored
- * @returns {object[]}
- */
-function sortByScore(items) {
-  return [...items].sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score;
-    return (b.popularity || 0) - (a.popularity || 0);
-  });
-}
-
-
-/* ------------------------------------------------------------
-   4. VARIETY ENFORCEMENT
-   Prevent any single content type from monopolising the top
-   results when the user selected multiple types.
-   ------------------------------------------------------------ */
-
-/**
- * Interleave items so no type appears more than `maxRun`
- * times consecutively in the top N results.
- *
- * Works by maintaining separate queues per type and round-
- * robin pulling from the heaviest queue that hasn't hit its
- * run limit.
- *
- * @param  {object[]} sorted     — score-sorted items
- * @param  {string[]} types      — selected types e.g. ['movie','anime']
- * @param  {number}   maxRun     — max consecutive items of same type
- * @returns {object[]}
- */
-function enforceVariety(sorted, types, maxRun = 3) {
-  if (types.length <= 1) return sorted;
-
-  /* Build per-type queues preserving score order */
-  const queues = {};
-  for (const t of types) queues[t] = [];
-  for (const item of sorted) {
-    if (queues[item.type]) queues[item.type].push(item);
+function updateCard(id, item, feedback, watchedIds, state) {
+  const safeId = String(id).replace(/_/g, "_");
+  const existing = document.querySelector("[data-id='" + safeId + "']");
+  if (!existing) {
+    /* Card may have been removed (watched). Re-render everything. */
+    renderResults(state);
+    return;
   }
 
-  const result  = [];
-  let   lastType = null;
-  let   runLen   = 0;
-
-  while (result.length < sorted.length) {
-    /* Find which type has the most items left and hasn't hit maxRun */
-    let chosen = null;
-    let bestCount = -1;
-
-    for (const t of types) {
-      if (queues[t].length === 0) continue;
-
-      const wouldContinueRun = (t === lastType);
-      if (wouldContinueRun && runLen >= maxRun) continue;
-
-      if (queues[t].length > bestCount) {
-        bestCount = queues[t].length;
-        chosen    = t;
-      }
-    }
-
-    /* If every non-exhausted type is blocked by maxRun, relax the rule */
-    if (chosen === null) {
-      for (const t of types) {
-        if (queues[t].length > 0) { chosen = t; break; }
-      }
-    }
-
-    if (chosen === null) break; /* All queues empty */
-
-    const item = queues[chosen].shift();
-    result.push(item);
-
-    if (chosen === lastType) {
-      runLen++;
-    } else {
-      lastType = chosen;
-      runLen   = 1;
-    }
+  /* If now watched, animate out then remove */
+  if (watchedIds.has(id)) {
+    existing.style.transition = 'opacity 0.25s, transform 0.25s';
+    existing.style.opacity    = '0';
+    existing.style.transform  = 'scale(0.95)';
+    setTimeout(() => existing.remove(), 280);
+    return;
   }
 
-  return result;
+  /* Replace the card HTML in place */
+  const newCardHtml = renderCard(item, feedback, watchedIds);
+  const temp        = document.createElement('div');
+  temp.innerHTML    = newCardHtml.trim();
+  const newCard     = temp.firstElementChild;
+  if (newCard) existing.replaceWith(newCard);
+}
+
+/**
+ * Update just the header nav without touching the screen.
+ * @param  {object} state
+ */
+function updateHeaderNav(state) {
+  renderHeaderNav('results', state);
 }
 
 
 /* ------------------------------------------------------------
-   5. RE-SCORE ON FEEDBACK
-   Called whenever a user likes or dislikes a card so the
-   visible list updates its ordering without a new API fetch.
+   7. TOAST NOTIFICATIONS
    ------------------------------------------------------------ */
 
 /**
- * Re-score and re-sort an existing result array after feedback
- * changes. Watched items are removed from the returned array.
- *
- * @param  {object[]} items
- * @param  {object}   answers
- * @param  {object}   feedback
- * @param  {Set}      watchedIds
- * @returns {object[]}
+ * Show a short toast message.
+ * Auto-dismisses after `duration` ms.
+ * @param  {string} message
+ * @param  {number} [duration=2200]
  */
-function rescoreAfterFeedback(items, answers, feedback, watchedIds) {
-  const active = items.filter(item => !watchedIds.has(item.id));
-  scoreAll(active, answers, feedback);
-  const types = answers.types || ['movie'];
-  const sorted = sortByScore(active);
-  return enforceVariety(sorted, types);
-}
+function showToast(message, duration = 2200) {
+  const container = document.getElementById('toast-container');
+  if (!container) return;
 
+  const toast     = document.createElement('div');
+  toast.className = 'toast';
+  toast.textContent = message;
+  toast.setAttribute('role', 'status');
 
-/* ------------------------------------------------------------
-   6. FULL PIPELINE
-   The single function app.js calls after fetchAllResults().
-   Applies filters → scores → sorts → enforces variety.
-   ------------------------------------------------------------ */
+  container.appendChild(toast);
 
-/**
- * Run the complete recommendation pipeline.
- *
- * @param  {object[]} rawItems    — normalised items from api.js
- * @param  {object}   answers     — quiz answers map
- * @param  {object}   feedback    — feedback map (may be empty)
- * @param  {Set}      watchedIds  — ids to exclude
- * @returns {object[]}            — final ordered recommendation list
- */
-function runEngine(rawItems, answers, feedback, watchedIds) {
-  if (!rawItems.length) return [];
-
-  const types = answers.types || ['movie'];
-
-  /* Step 1: hard filters */
-  const filtered = applyHardFilters(rawItems, answers, watchedIds);
-
-  /* Step 2: score */
-  scoreAll(filtered, answers, feedback);
-
-  /* Step 3: sort */
-  const sorted = sortByScore(filtered);
-
-  /* Step 4: variety */
-  const varied = enforceVariety(sorted, types);
-
-  return varied;
-}
-
-
-/* ------------------------------------------------------------
-   7. TASTE PROFILE SUMMARY
-   Derives a small human-readable profile from quiz answers.
-   Used by ui.js to render the taste strip above results.
-   ------------------------------------------------------------ */
-
-/**
- * Build an array of { label, value } pairs summarising the
- * user's taste profile.
- *
- * @param  {object} answers
- * @returns {{ label: string, value: string }[]}
- */
-function buildTasteProfile(answers) {
-  const chips = [];
-
-  /* Content types */
-  const types = (answers.types || []).map(t => TYPE_LABELS[t]).filter(Boolean);
-  if (types.length) chips.push({ label: 'Watching', value: types.join(', ') });
-
-  /* Mood */
-  const moodLabels = {
-    funny:     'Funny',
-    dark:      'Dark',
-    emotional: 'Emotional',
-    action:    'Action',
-    mindBend:  'Mind-bending',
-    cozy:      'Cozy',
-  };
-  const mood = answers.mood;
-  if (mood) chips.push({ label: 'Mood', value: moodLabels[mood] || mood });
-
-  /* Top genres (cap at 3) */
-  const genreLabels = {
-    action_adv: 'Action',
-    romance:    'Romance',
-    scifi:      'Sci-Fi',
-    thriller:   'Thriller',
-    drama:      'Drama',
-    comedy:     'Comedy',
-    horror:     'Horror',
-    crime:      'Crime',
-  };
-  const genres = (answers.genres || [])
-    .map(g => genreLabels[g])
-    .filter(Boolean)
-    .slice(0, 3);
-  if (genres.length) chips.push({ label: 'Genres', value: genres.join(', ') });
-
-  /* Maturity */
-  const maturityLabels = { family: 'Family', teen: 'PG-13', adult: '18+' };
-  const maturity = answers.maturity;
-  if (maturity) chips.push({ label: 'Rating', value: maturityLabels[maturity] || maturity });
-
-  /* Vibe */
-  const vibeLabels = {
-    quality:  'Best rated',
-    popular:  'Popular now',
-    hidden:   'Hidden gems',
-    surprise: 'Surprise me',
-  };
-  const vibe = answers.vibe;
-  if (vibe) chips.push({ label: 'Vibe', value: vibeLabels[vibe] || vibe });
-
-  return chips;
+  setTimeout(() => {
+    toast.classList.add('out');
+    setTimeout(() => toast.remove(), 200);
+  }, duration);
 }
