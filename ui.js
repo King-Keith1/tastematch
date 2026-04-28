@@ -285,7 +285,7 @@ function renderCard(item, feedback, watchedIds) {
     data-id="${escAttr(item.id)}"
     aria-label="${escAttr(item.title)}"
   >
-    <div class="card-poster-wrap">
+    <div class="card-poster-wrap" data-action="open-modal" data-id="${escAttr(item.id)}" role="button" tabindex="0" aria-label="View details for ${escAttr(item.title)}">
       ${renderPoster(item)}
       <div class="card-badges">
         <span class="badge ${badgeClass}">${escHtml(typeLabel)}</span>
@@ -576,4 +576,257 @@ function showToast(message, duration = 2200) {
     toast.classList.add('out');
     setTimeout(() => toast.remove(), 200);
   }, duration);
+}
+
+
+/* ------------------------------------------------------------
+   8. DETAIL MODAL
+   ------------------------------------------------------------ */
+
+/**
+ * Resolve human-readable genre labels for an item.
+ * TMDB items carry numeric IDs; anime items carry strings.
+ * Returns an array of label strings.
+ * @param  {object} item
+ * @returns {string[]}
+ */
+function resolveGenreLabels(item) {
+  if (item.type === 'anime') {
+    return (item.genres || []).slice(0, 6);
+  }
+
+  const map = item.type === 'movie' ? TMDB_MOVIE_GENRES : TMDB_TV_GENRES;
+  /* Invert the map: id → name */
+  const idToName = {};
+  for (const [name, id] of Object.entries(map)) {
+    idToName[id] = name.charAt(0).toUpperCase() + name.slice(1);
+  }
+
+  /* Tidy up compound keys like 'action_adv' → skip, use id lookup */
+  return (item.genres || [])
+    .map(id => idToName[id])
+    .filter(Boolean)
+    .slice(0, 6);
+}
+
+/**
+ * Render and inject the detail modal for a given item.
+ * Creates the overlay element, appends to body.
+ *
+ * @param  {object} item
+ * @param  {object} feedback
+ * @param  {Set}    watchedIds
+ */
+function renderModal(item, feedback, watchedIds) {
+  /* Remove any existing modal first */
+  closeModal(true);
+
+  const fb        = feedback[item.id] || null;
+  const isWatched = watchedIds.has(item.id);
+  const badgeClass = TYPE_BADGE_CLASSES[item.type] || '';
+  const typeLabel  = TYPE_LABELS[item.type]        || item.type;
+  const genres     = resolveGenreLabels(item);
+
+  const posterHtml = item.poster
+    ? `<img
+        class="modal-poster"
+        src="${escAttr(item.poster)}"
+        alt="${escAttr(item.title)} poster"
+        onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"
+      />
+      <div class="modal-poster-placeholder" style="display:none">
+        ${POSTER_PLACEHOLDER_SVG}
+      </div>`
+    : `<div class="modal-poster-placeholder">${POSTER_PLACEHOLDER_SVG}</div>`;
+
+  const metaParts = [];
+  if (item.rating !== null && item.rating !== undefined) {
+    metaParts.push(renderRating(item.rating));
+  }
+  if (item.year) {
+    metaParts.push(`<span>${escHtml(item.year)}</span>`);
+  }
+
+  const scoreHtml = item.score
+    ? `<span class="modal-score-chip">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+        </svg>
+        ${item.score}% match
+      </span>`
+    : '';
+
+  const genreHtml = genres.length
+    ? `<div class="modal-genres">
+        ${genres.map(g => `<span class="modal-genre-pill">${escHtml(g)}</span>`).join('')}
+      </div>`
+    : '';
+
+  const overviewHtml = item.overview
+    ? `<div>
+        <p class="modal-section-label">Overview</p>
+        <p class="modal-overview">${escHtml(item.overview)}</p>
+      </div>`
+    : '';
+
+  const html = `
+    <div class="modal-overlay" id="modal-overlay" role="dialog"
+         aria-modal="true" aria-label="${escAttr(item.title)} details">
+      <div class="modal-panel" id="modal-panel">
+        <div class="modal-handle" aria-hidden="true"></div>
+
+        <div class="modal-hero">
+          ${posterHtml}
+
+          <div class="modal-info">
+            <span class="badge ${badgeClass} modal-type-badge">${escHtml(typeLabel)}</span>
+            <h2 class="modal-title">${escHtml(item.title)}</h2>
+
+            ${metaParts.length
+              ? `<div class="modal-meta-row">
+                  ${metaParts.join('<span class="divider" aria-hidden="true"></span>')}
+                  ${scoreHtml}
+                </div>`
+              : scoreHtml ? `<div class="modal-meta-row">${scoreHtml}</div>` : ''}
+
+            ${genreHtml}
+          </div>
+
+          <button class="modal-close" id="modal-close-btn" aria-label="Close details">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2.5" stroke-linecap="round" aria-hidden="true">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+
+        <div class="modal-body">
+          ${overviewHtml}
+
+          <div class="modal-actions">
+            <button
+              class="modal-action-btn${fb === 'like' ? ' active-like' : ''}"
+              data-action="like"
+              data-id="${escAttr(item.id)}"
+              aria-pressed="${fb === 'like' ? 'true' : 'false'}"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24"
+                   fill="${fb === 'like' ? 'currentColor' : 'none'}"
+                   stroke="currentColor" stroke-width="2"
+                   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3H14z"/>
+                <path d="M7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/>
+              </svg>
+              Like
+            </button>
+
+            <button
+              class="modal-action-btn${isWatched ? ' active-watched' : ''}"
+              data-action="watched"
+              data-id="${escAttr(item.id)}"
+              aria-pressed="${isWatched ? 'true' : 'false'}"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24"
+                   fill="${isWatched ? 'currentColor' : 'none'}"
+                   stroke="currentColor" stroke-width="2"
+                   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+              ${isWatched ? 'Watched' : 'Mark watched'}
+            </button>
+
+            <button
+              class="modal-action-btn${fb === 'dislike' ? ' active-dislike' : ''}"
+              data-action="dislike"
+              data-id="${escAttr(item.id)}"
+              aria-pressed="${fb === 'dislike' ? 'true' : 'false'}"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24"
+                   fill="${fb === 'dislike' ? 'currentColor' : 'none'}"
+                   stroke="currentColor" stroke-width="2"
+                   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3H10z"/>
+                <path d="M17 2h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"/>
+              </svg>
+              Not for me
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+
+  const wrapper = document.createElement('div');
+  wrapper.innerHTML = html.trim();
+  const overlay = wrapper.firstElementChild;
+  document.body.appendChild(overlay);
+
+  /* Trap focus inside modal */
+  const firstFocusable = overlay.querySelector('button');
+  if (firstFocusable) firstFocusable.focus();
+
+  /* Store which item is open so app.js can read it */
+  overlay.dataset.itemId = item.id;
+}
+
+/**
+ * Close and remove the detail modal.
+ * @param  {boolean} [immediate=false]  — skip animation when replacing
+ */
+function closeModal(immediate) {
+  const overlay = document.getElementById('modal-overlay');
+  if (!overlay) return;
+
+  if (immediate) {
+    overlay.remove();
+    return;
+  }
+
+  overlay.classList.add('closing');
+  overlay.addEventListener('animationend', () => overlay.remove(), { once: true });
+}
+
+/**
+ * Refresh the modal action buttons in place after a feedback/watched
+ * change, without closing and reopening the modal.
+ * @param  {string} itemId
+ * @param  {object} feedback
+ * @param  {Set}    watchedIds
+ */
+function refreshModalActions(itemId, feedback, watchedIds) {
+  const overlay = document.getElementById('modal-overlay');
+  if (!overlay || overlay.dataset.itemId !== itemId) return;
+
+  const fb        = feedback[itemId] || null;
+  const isWatched = watchedIds.has(itemId);
+
+  const btns = overlay.querySelectorAll('.modal-action-btn');
+  btns.forEach(btn => {
+    const action = btn.dataset.action;
+    btn.classList.remove('active-like', 'active-dislike', 'active-watched');
+    btn.setAttribute('aria-pressed', 'false');
+
+    if (action === 'like'    && fb === 'like')    { btn.classList.add('active-like');    btn.setAttribute('aria-pressed', 'true'); }
+    if (action === 'dislike' && fb === 'dislike') { btn.classList.add('active-dislike'); btn.setAttribute('aria-pressed', 'true'); }
+    if (action === 'watched' && isWatched)        { btn.classList.add('active-watched'); btn.setAttribute('aria-pressed', 'true'); }
+
+    /* Update watched button label */
+    if (action === 'watched') {
+      const label = btn.lastChild;
+      if (label && label.nodeType === Node.TEXT_NODE) {
+        label.textContent = isWatched ? 'Watched' : 'Mark watched';
+      }
+    }
+
+    /* Update SVG fill */
+    const svg = btn.querySelector('svg');
+    if (svg) {
+      const filled = (action === 'like' && fb === 'like') ||
+                     (action === 'dislike' && fb === 'dislike') ||
+                     (action === 'watched' && isWatched);
+      svg.setAttribute('fill', filled ? 'currentColor' : 'none');
+    }
+  });
 }
