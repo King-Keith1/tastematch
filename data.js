@@ -1,9 +1,9 @@
 /* ============================================================
+   TASTEMATCH — data.js
    All static constants: quiz questions, genre maps, keyword
    maps, and scoring weights. No logic lives here.
    ============================================================ */
 
-'use strict';
 
 
 /* ------------------------------------------------------------
