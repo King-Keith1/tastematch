@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TasteMatch — Find Your Next Watch</title>
+  <meta name="description" content="A personalised recommendation engine for movies, TV shows and anime." />
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Instrument+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap"
+    rel="stylesheet"
+  />
+
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- App shell -->
+  <div id="app">
+
+    <!-- Persistent header -->
+    <header id="site-header">
+      <div class="header-inner">
+        <a class="wordmark" href="#" id="logo-link">
+          <span class="wordmark-primary">TASTE</span><span class="wordmark-accent">MATCH</span>
+        </a>
+        <nav class="header-nav" id="header-nav" aria-label="Primary navigation">
+          <!-- Populated by ui.js depending on screen -->
+        </nav>
+      </div>
+    </header>
+
+    <!-- Main content area — swapped by ui.js -->
+    <main id="screen" role="main" aria-live="polite">
+      <!-- Quiz / Loading / Results rendered here -->
+    </main>
+
+    <!-- Toast notifications -->
+    <div id="toast-container" aria-live="assertive" aria-atomic="true"></div>
+
+  </div><!-- /#app -->
+
+  <!-- JS modules — order matters -->
+  <script src="data.js"></script>
+  <script src="api.js"></script>
+  <script src="engine.js"></script>
+  <script src="ui.js"></script>
+  <script src="app.js"></script>
+
+</body>
+</html>
