@@ -372,6 +372,28 @@ function handleRetake() {
 }
 
 
+
+/* ------------------------------------------------------------
+   6b. MODAL
+   ------------------------------------------------------------ */
+
+/**
+ * Open the detail modal for the item with the given id.
+ * @param {string} id
+ */
+function handleOpenModal(id) {
+  const item = state.results.find(r => r.id === id);
+  if (!item) return;
+  renderModal(item, state.feedback, state.watched);
+}
+
+/**
+ * Close the detail modal.
+ */
+function handleCloseModal() {
+  closeModal(false);
+}
+
 /* ------------------------------------------------------------
    7. EVENT DELEGATION
    A single listener on each major container handles all
@@ -398,6 +420,9 @@ function onScreenClick(e) {
   /* Quiz navigation */
   if (target.id === 'btn-next')  { handleNext();  return; }
   if (target.id === 'btn-back')  { handleBack();  return; }
+
+  /* Modal open */
+  if (target.dataset.action === 'open-modal') { handleOpenModal(target.dataset.id); return; }
 
   /* Results actions */
   if (target.dataset.action === 'like')    { handleFeedback(target.dataset.id, 'like');    return; }
@@ -432,11 +457,15 @@ function onHeaderClick(e) {
  * @param  {KeyboardEvent} e
  */
 function onKeyDown(e) {
+  /* Escape closes the modal if open */
+  if (e.key === 'Escape') {
+    const overlay = document.getElementById('modal-overlay');
+    if (overlay) { handleCloseModal(); return; }
+  }
+
   /* Enter / Space on the #screen advances the quiz if applicable */
   if ((e.key === 'Enter' || e.key === ' ') && state.screen === 'quiz') {
     const focused = document.activeElement;
-    /* Already handled by the button's own click — only intercept if
-       focus is on the screen container itself */
     if (focused && focused.id === 'screen') {
       e.preventDefault();
       handleNext();
@@ -444,6 +473,39 @@ function onKeyDown(e) {
   }
 }
 
+
+
+/**
+ * Handle clicks on document.body — routes modal overlay and
+ * modal action buttons which live outside #screen.
+ * @param {MouseEvent} e
+ */
+function onBodyClick(e) {
+  /* Close button inside modal */
+  if (e.target.closest('#modal-close-btn')) {
+    handleCloseModal();
+    return;
+  }
+
+  /* Click on the overlay backdrop (outside the panel) */
+  const overlay = document.getElementById('modal-overlay');
+  if (overlay && e.target === overlay) {
+    handleCloseModal();
+    return;
+  }
+
+  /* Action buttons inside the modal */
+  const btn = e.target.closest('.modal-action-btn[data-action]');
+  if (!btn) return;
+
+  const action = btn.dataset.action;
+  const id     = btn.dataset.id;
+  if (!id) return;
+
+  if (action === 'like')    { handleFeedback(id, 'like');    refreshModalActions(id, state.feedback, state.watched); return; }
+  if (action === 'dislike') { handleFeedback(id, 'dislike'); refreshModalActions(id, state.feedback, state.watched); return; }
+  if (action === 'watched') { handleWatched(id);             refreshModalActions(id, state.feedback, state.watched); return; }
+}
 
 /* ------------------------------------------------------------
    8. INITIALISATION
@@ -460,6 +522,9 @@ function init() {
   if (screen) screen.addEventListener('click', onScreenClick);
   if (header) header.addEventListener('click', onHeaderClick);
   document.addEventListener('keydown', onKeyDown);
+
+  /* Modal events — delegated on document.body since modal is outside #screen */
+  document.body.addEventListener('click', onBodyClick);
 
   /* Render initial quiz screen */
   renderQuiz(state.qIndex, state.answers);
