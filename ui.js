@@ -104,18 +104,18 @@ function renderHeaderNav(screen, state) {
   let html = '';
 
   if (screen === 'results') {
-    const watchedCount  = state.watched.size;
-    const likedCount    = Object.values(state.feedback).filter(v => v === 'like').length;
+    const laterCount  = (state.watchLater  || new Set()).size;
+    const nowCount    = (state.watchingNow || new Set()).size;
+    const likedCount  = Object.values(state.feedback).filter(v => v === 'like').length;
 
-    if (watchedCount > 0) {
-      html += `<span class="nav-btn" aria-live="polite">
-        ${watchedCount} watched
-      </span>`;
+    if (nowCount > 0) {
+      html += `<span class="nav-btn nav-btn-now" aria-live="polite">${nowCount} watching</span>`;
+    }
+    if (laterCount > 0) {
+      html += `<span class="nav-btn" aria-live="polite">${laterCount} saved</span>`;
     }
     if (likedCount > 0) {
-      html += `<span class="nav-btn active" aria-live="polite">
-        ${likedCount} liked
-      </span>`;
+      html += `<span class="nav-btn active" aria-live="polite">${likedCount} liked</span>`;
     }
     html += `<button class="nav-btn" id="nav-retake">Retake quiz</button>`;
   }
@@ -263,12 +263,14 @@ function renderLoading() {
  * Render a single result card.
  * @param  {object}  item
  * @param  {object}  feedback   — full feedback map
- * @param  {Set}     watchedIds
+ * @param  {Set}     watchLater
+ * @param  {Set}     watchingNow
  * @returns {string}
  */
-function renderCard(item, feedback, watchedIds) {
-  const fb         = feedback[item.id] || null;
-  const isWatched  = watchedIds.has(item.id);
+function renderCard(item, feedback, watchLater, watchingNow) {
+  const fb           = feedback[item.id] || null;
+  const isWatchLater = (watchLater  || new Set()).has(item.id);
+  const isWatchingNow= (watchingNow || new Set()).has(item.id);
   const badgeClass = TYPE_BADGE_CLASSES[item.type] || '';
   const typeLabel  = TYPE_LABELS[item.type]        || item.type;
 
@@ -321,17 +323,31 @@ function renderCard(item, feedback, watchedIds) {
         </button>
 
         <button
-          class="btn-icon${isWatched ? ' active-watched' : ''}"
-          data-action="watched"
+          class="btn-icon${isWatchingNow ? ' active-watched' : ''}"
+          data-action="watching-now"
           data-id="${escAttr(item.id)}"
-          aria-label="${isWatched ? 'Mark as unwatched' : 'Mark as watched'}: ${escAttr(item.title)}"
-          aria-pressed="${isWatched ? 'true' : 'false'}"
-          title="${isWatched ? 'Unmark watched' : 'Mark watched'}"
+          aria-label="${isWatchingNow ? 'Remove from Watching Now' : 'Watching Now'}"
+          aria-pressed="${isWatchingNow ? 'true' : 'false'}"
+          title="Watching Now"
         >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="${isWatched ? 'currentColor' : 'none'}"
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="${isWatchingNow ? 'currentColor' : 'none'}"
                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
             <circle cx="12" cy="12" r="3"/>
+          </svg>
+        </button>
+
+        <button
+          class="btn-icon${isWatchLater ? ' active-info' : ''}"
+          data-action="watch-later"
+          data-id="${escAttr(item.id)}"
+          aria-label="${isWatchLater ? 'Remove from Watch Later' : 'Save for later'}"
+          aria-pressed="${isWatchLater ? 'true' : 'false'}"
+          title="Watch Later"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="${isWatchLater ? 'currentColor' : 'none'}"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
           </svg>
         </button>
 
@@ -429,12 +445,12 @@ function renderErrorBanner(errorMsg) {
  * @param  {object[]} results
  * @param  {string}   activeFilter
  * @param  {object}   feedback
- * @param  {Set}      watchedIds
+ * @param  {Set}      watchLater
+ * @param  {Set}      watchingNow
  * @returns {string}
  */
-function renderResultsGrid(results, activeFilter, feedback, watchedIds) {
+function renderResultsGrid(results, activeFilter, feedback, watchLater, watchingNow) {
   const visible = results.filter(r => {
-    if (watchedIds.has(r.id))                          return false;
     if (activeFilter !== 'all' && r.type !== activeFilter) return false;
     return true;
   });
@@ -447,7 +463,7 @@ function renderResultsGrid(results, activeFilter, feedback, watchedIds) {
   }
 
   const cards = visible
-    .map(item => renderCard(item, feedback, watchedIds))
+    .map(item => renderCard(item, feedback, watchLater, watchingNow))
     .join('\n');
 
   return `<div class="results-grid" role="list" aria-label="Recommendations">
@@ -460,10 +476,9 @@ function renderResultsGrid(results, activeFilter, feedback, watchedIds) {
  * @param  {object} state  — full app state object
  */
 function renderResults(state) {
-  const { results, answers, feedback, watched, activeFilter, error, loadingMore } = state;
+  const { results, answers, feedback, watchLater, watchingNow, activeFilter, error, loadingMore } = state;
 
   const totalVisible = results.filter(r => {
-    if (watched.has(r.id)) return false;
     if (activeFilter !== 'all' && r.type !== activeFilter) return false;
     return true;
   }).length;
@@ -483,7 +498,7 @@ function renderResults(state) {
       ${renderTasteStrip(answers)}
       ${renderErrorBanner(error)}
       ${renderFilterTabs(results, activeFilter)}
-      ${renderResultsGrid(results, activeFilter, feedback, watched)}
+      ${renderResultsGrid(results, activeFilter, feedback, watchLater, watchingNow)}
 
       <footer class="results-footer">
         <button class="btn btn-primary" id="btn-retake">Retake quiz</button>
@@ -513,10 +528,11 @@ function renderResults(state) {
  * @param  {string}  id
  * @param  {object}  item
  * @param  {object}  feedback
- * @param  {Set}     watchedIds
+ * @param  {Set}     watchLater
+ * @param  {Set}     watchingNow
  * @param  {object}  state       — passed for full fallback
  */
-function updateCard(id, item, feedback, watchedIds, state) {
+function updateCard(id, item, feedback, watchLater, watchingNow, state) {
   const safeId = String(id).replace(/_/g, "_");
   const existing = document.querySelector("[data-id='" + safeId + "']");
   if (!existing) {
@@ -525,17 +541,8 @@ function updateCard(id, item, feedback, watchedIds, state) {
     return;
   }
 
-  /* If now watched, animate out then remove */
-  if (watchedIds.has(id)) {
-    existing.style.transition = 'opacity 0.25s, transform 0.25s';
-    existing.style.opacity    = '0';
-    existing.style.transform  = 'scale(0.95)';
-    setTimeout(() => existing.remove(), 280);
-    return;
-  }
-
   /* Replace the card HTML in place */
-  const newCardHtml = renderCard(item, feedback, watchedIds);
+  const newCardHtml = renderCard(item, feedback, watchLater, watchingNow);
   const temp        = document.createElement('div');
   temp.innerHTML    = newCardHtml.trim();
   const newCard     = temp.firstElementChild;
@@ -615,14 +622,16 @@ function resolveGenreLabels(item) {
  *
  * @param  {object} item
  * @param  {object} feedback
- * @param  {Set}    watchedIds
+ * @param  {Set}    watchLater
+ * @param  {Set}    watchingNow
  */
-function renderModal(item, feedback, watchedIds) {
+function renderModal(item, feedback, watchLater, watchingNow) {
   /* Remove any existing modal first */
   closeModal(true);
 
-  const fb        = feedback[item.id] || null;
-  const isWatched = watchedIds.has(item.id);
+  const fb           = feedback[item.id] || null;
+  const isWatchLater  = (watchLater  || new Set()).has(item.id);
+  const isWatchingNow = (watchingNow || new Set()).has(item.id);
   const badgeClass = TYPE_BADGE_CLASSES[item.type] || '';
   const typeLabel  = TYPE_LABELS[item.type]        || item.type;
   const genres     = resolveGenreLabels(item);
@@ -723,19 +732,34 @@ function renderModal(item, feedback, watchedIds) {
             </button>
 
             <button
-              class="modal-action-btn${isWatched ? ' active-watched' : ''}"
-              data-action="watched"
+              class="modal-action-btn${isWatchingNow ? ' active-watched' : ''}"
+              data-action="watching-now"
               data-id="${escAttr(item.id)}"
-              aria-pressed="${isWatched ? 'true' : 'false'}"
+              aria-pressed="${isWatchingNow ? 'true' : 'false'}"
             >
               <svg width="18" height="18" viewBox="0 0 24 24"
-                   fill="${isWatched ? 'currentColor' : 'none'}"
+                   fill="${isWatchingNow ? 'currentColor' : 'none'}"
                    stroke="currentColor" stroke-width="2"
                    stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
                 <circle cx="12" cy="12" r="3"/>
               </svg>
-              ${isWatched ? 'Watched' : 'Mark watched'}
+              ${isWatchingNow ? 'Watching' : 'Watching Now'}
+            </button>
+
+            <button
+              class="modal-action-btn${isWatchLater ? ' active-info' : ''}"
+              data-action="watch-later"
+              data-id="${escAttr(item.id)}"
+              aria-pressed="${isWatchLater ? 'true' : 'false'}"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24"
+                   fill="${isWatchLater ? 'currentColor' : 'none'}"
+                   stroke="currentColor" stroke-width="2"
+                   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
+              </svg>
+              ${isWatchLater ? 'Saved' : 'Watch Later'}
             </button>
 
             <button
@@ -793,39 +817,42 @@ function closeModal(immediate) {
  * change, without closing and reopening the modal.
  * @param  {string} itemId
  * @param  {object} feedback
- * @param  {Set}    watchedIds
+ * @param  {Set}    watchLater
+ * @param  {Set}    watchingNow
  */
-function refreshModalActions(itemId, feedback, watchedIds) {
+function refreshModalActions(itemId, feedback, watchLater, watchingNow) {
   const overlay = document.getElementById('modal-overlay');
   if (!overlay || overlay.dataset.itemId !== itemId) return;
 
-  const fb        = feedback[itemId] || null;
-  const isWatched = watchedIds.has(itemId);
+  const fb           = feedback[itemId] || null;
+  const isWatchLater  = (watchLater  || new Set()).has(itemId);
+  const isWatchingNow = (watchingNow || new Set()).has(itemId);
 
   const btns = overlay.querySelectorAll('.modal-action-btn');
   btns.forEach(btn => {
     const action = btn.dataset.action;
-    btn.classList.remove('active-like', 'active-dislike', 'active-watched');
+    btn.classList.remove('active-like', 'active-dislike', 'active-watched', 'active-info');
     btn.setAttribute('aria-pressed', 'false');
 
-    if (action === 'like'    && fb === 'like')    { btn.classList.add('active-like');    btn.setAttribute('aria-pressed', 'true'); }
-    if (action === 'dislike' && fb === 'dislike') { btn.classList.add('active-dislike'); btn.setAttribute('aria-pressed', 'true'); }
-    if (action === 'watched' && isWatched)        { btn.classList.add('active-watched'); btn.setAttribute('aria-pressed', 'true'); }
+    if (action === 'like'         && fb === 'like')    { btn.classList.add('active-like');    btn.setAttribute('aria-pressed', 'true'); }
+    if (action === 'dislike'      && fb === 'dislike') { btn.classList.add('active-dislike'); btn.setAttribute('aria-pressed', 'true'); }
+    if (action === 'watching-now' && isWatchingNow)    { btn.classList.add('active-watched'); btn.setAttribute('aria-pressed', 'true'); }
+    if (action === 'watch-later'  && isWatchLater)     { btn.classList.add('active-info');    btn.setAttribute('aria-pressed', 'true'); }
 
-    /* Update watched button label */
-    if (action === 'watched') {
-      const label = btn.lastChild;
-      if (label && label.nodeType === Node.TEXT_NODE) {
-        label.textContent = isWatched ? 'Watched' : 'Mark watched';
-      }
+    /* Update button label text */
+    const label = btn.lastChild;
+    if (label && label.nodeType === Node.TEXT_NODE) {
+      if (action === 'watching-now') label.textContent = isWatchingNow ? 'Watching' : 'Watching Now';
+      if (action === 'watch-later')  label.textContent = isWatchLater  ? 'Saved'    : 'Watch Later';
     }
 
     /* Update SVG fill */
     const svg = btn.querySelector('svg');
     if (svg) {
-      const filled = (action === 'like' && fb === 'like') ||
-                     (action === 'dislike' && fb === 'dislike') ||
-                     (action === 'watched' && isWatched);
+      const filled = (action === 'like'         && fb === 'like')    ||
+                     (action === 'dislike'       && fb === 'dislike') ||
+                     (action === 'watching-now'  && isWatchingNow)   ||
+                     (action === 'watch-later'   && isWatchLater);
       svg.setAttribute('fill', filled ? 'currentColor' : 'none');
     }
   });
