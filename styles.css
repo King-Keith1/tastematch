@@ -1259,3 +1259,39 @@ body::before {
     grid-template-columns: 1fr 1fr 1fr;
   }
 }
+
+/* ------------------------------------------------------------
+   14. WATCH LIST STATES
+   ------------------------------------------------------------ */
+
+/* Watch Later button active state (blue) */
+.btn-icon.active-info {
+  color: var(--info);
+  border-color: rgba(95 170 255 / 0.4);
+  background: var(--info-dim);
+}
+
+.modal-action-btn.active-info {
+  color: var(--info);
+  background: var(--info-dim);
+  border-color: rgba(95 170 255 / 0.4);
+}
+
+/* Header nav watching badge */
+.nav-btn.nav-btn-now {
+  color: var(--info);
+  border-color: rgba(95 170 255 / 0.3);
+  background: var(--info-dim);
+}
+
+/* Modal actions — expand to 4 columns for the extra button */
+.modal-actions {
+  grid-template-columns: 1fr 1fr 1fr 1fr;
+}
+
+@media (max-width: 600px) {
+  /* Stack into 2x2 grid on mobile */
+  .modal-actions {
+    grid-template-columns: 1fr 1fr;
+  }
+}
