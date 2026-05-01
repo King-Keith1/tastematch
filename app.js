@@ -6,131 +6,179 @@
    ============================================================ */
 
 
+/* ------------------------------------------------------------
+   1. LOCALSTORAGE
+   All persistence lives here. The rest of the app never
+   touches localStorage directly.
+   ------------------------------------------------------------ */
+
+const STORAGE_KEY = 'tastematch_v1';
+
+/**
+ * Serialise state to localStorage.
+ * Sets and item arrays are converted to plain JSON-safe types.
+ * @param {object} s
+ */
+function saveToStorage(s) {
+  try {
+    const payload = {
+      answers:     s.answers,
+      feedback:    s.feedback,
+      watchLater:  [...s.watchLater],
+      watchingNow: [...s.watchingNow],
+      /* Persist the full results pool so reopening doesn't require
+         a new API fetch. Items are large-ish, so cap at 60. */
+      results:     s.results.slice(0, 60).map(function(item) {
+        /* Drop the computed score — it gets recalculated on load */
+        var copy = Object.assign({}, item);
+        delete copy.score;
+        return copy;
+      }),
+      activeFilter: s.activeFilter,
+      page:         s.page,
+      /* Store screen so we can restore to results if applicable */
+      screen:       s.screen === 'results' ? 'results' : 'quiz',
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  } catch (e) {
+    /* localStorage can be unavailable (private mode, full quota) */
+    console.warn('[storage] save failed:', e.message);
+  }
+}
+
+/**
+ * Load persisted state from localStorage.
+ * Returns null if nothing is stored or data is malformed.
+ * @returns {object|null}
+ */
+function loadFromStorage() {
+  try {
+    var raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    var data = JSON.parse(raw);
+    return {
+      answers:     data.answers     || {},
+      feedback:    data.feedback    || {},
+      watchLater:  new Set(data.watchLater  || []),
+      watchingNow: new Set(data.watchingNow || []),
+      results:     data.results     || [],
+      activeFilter:data.activeFilter || 'all',
+      page:        data.page        || 1,
+      screen:      data.screen      || 'quiz',
+    };
+  } catch (e) {
+    console.warn('[storage] load failed:', e.message);
+    return null;
+  }
+}
+
+/**
+ * Clear all persisted data.
+ */
+function clearStorage() {
+  try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
+}
+
 
 /* ------------------------------------------------------------
-   1. STATE
-   Single source of truth. Never mutated directly outside of
-   the setState() helper below.
+   2. STATE
    ------------------------------------------------------------ */
 
 const INITIAL_STATE = {
-  screen:      'quiz',    // 'quiz' | 'loading' | 'results'
-  qIndex:      0,         // current question index
-  answers:     {},        // { [questionId]: string[] }
-  results:     [],        // scored + sorted item objects
-  feedback:    {},        // { [itemId]: 'like' | 'dislike' | null }
-  watched:     new Set(), // Set of item ids marked as watched
-  activeFilter:'all',     // 'all' | 'movie' | 'tv' | 'anime'
-  loadingMore: false,     // true while load-more fetch is in flight
-  error:       null,      // string | null
-  page:        1,         // current pagination page for load-more
+  screen:      'quiz',
+  qIndex:      0,
+  answers:     {},
+  results:     [],
+  feedback:    {},
+  watchLater:  new Set(),
+  watchingNow: new Set(),
+  activeFilter:'all',
+  loadingMore: false,
+  error:       null,
+  page:        1,
 };
 
 let state = deepCloneState(INITIAL_STATE);
 
 /**
- * Deep-clone the initial state shape.
- * Handles the Set type manually since structuredClone is not
- * available in all target browsers.
+ * Deep-clone the state shape, handling Sets manually.
  * @param  {object} src
  * @returns {object}
  */
 function deepCloneState(src) {
-  return {
-    ...src,
-    answers:  { ...src.answers },
-    results:  [...(src.results || [])],
-    feedback: { ...src.feedback },
-    watched:  new Set(src.watched),
-  };
+  return Object.assign({}, src, {
+    answers:     Object.assign({}, src.answers),
+    results:     (src.results  || []).slice(),
+    feedback:    Object.assign({}, src.feedback),
+    watchLater:  new Set(src.watchLater),
+    watchingNow: new Set(src.watchingNow),
+  });
 }
 
 /**
- * Merge a partial update into state and return the new state.
- * Does NOT trigger a render — callers decide when to render.
- * @param  {object} patch
+ * Merge a partial update into state.
+ * Persists to localStorage after every meaningful change.
+ * @param {object} patch
+ * @param {boolean} [persist=true]
  */
-function setState(patch) {
-  state = { ...state, ...patch };
+function setState(patch, persist) {
+  state = Object.assign({}, state, patch);
+  if (persist !== false) saveToStorage(state);
 }
 
 
 /* ------------------------------------------------------------
-   2. QUIZ NAVIGATION
+   3. QUIZ NAVIGATION
    ------------------------------------------------------------ */
 
-/**
- * Toggle or set the answer for the current question.
- * For 'single' type: replace the answer.
- * For 'multi'  type: toggle the value in/out of the array.
- *
- * @param  {string} questionId
- * @param  {string} value
- * @param  {'single'|'multi'} type
- */
 function handleOptionClick(questionId, value, type) {
-  const current = state.answers[questionId] || [];
+  var current = state.answers[questionId] || [];
+  var next;
 
-  let next;
   if (type === 'multi') {
     next = current.includes(value)
-      ? current.filter(v => v !== value)
-      : [...current, value];
+      ? current.filter(function(v) { return v !== value; })
+      : current.concat([value]);
   } else {
     next = [value];
   }
 
-  setState({
-    answers: { ...state.answers, [questionId]: next },
-  });
-
+  var newAnswers = Object.assign({}, state.answers);
+  newAnswers[questionId] = next;
+  setState({ answers: newAnswers });
   renderQuiz(state.qIndex, state.answers);
 }
 
-/**
- * Advance to the next question, or trigger the search if on
- * the last question.
- */
 function handleNext() {
-  const q       = QUESTIONS[state.qIndex];
-  const current = state.answers[q.id] || [];
-
-  /* Guard: should not be reachable (button is disabled), but
-     belt-and-braces to prevent proceeding with empty answers. */
+  var q       = QUESTIONS[state.qIndex];
+  var current = state.answers[q.id] || [];
   if (current.length === 0) return;
 
   if (state.qIndex < QUESTIONS.length - 1) {
-    setState({ qIndex: state.qIndex + 1 });
+    setState({ qIndex: state.qIndex + 1 }, false);
     renderQuiz(state.qIndex, state.answers);
   } else {
     startSearch();
   }
 }
 
-/**
- * Go back one question.
- */
 function handleBack() {
   if (state.qIndex === 0) return;
-  setState({ qIndex: state.qIndex - 1 });
+  setState({ qIndex: state.qIndex - 1 }, false);
   renderQuiz(state.qIndex, state.answers);
 }
 
 
 /* ------------------------------------------------------------
-   3. SEARCH ORCHESTRATION
+   4. SEARCH ORCHESTRATION
    ------------------------------------------------------------ */
 
-/**
- * Kick off the full search pipeline:
- * show loading → fetch → score → render results.
- */
 async function startSearch() {
-  setState({ screen: 'loading', error: null });
+  setState({ screen: 'loading', error: null }, false);
   renderLoading();
 
-  let raw = [];
-  let errorMsg = null;
+  var raw      = [];
+  var errorMsg = null;
 
   try {
     raw = await fetchAllResults(state.answers);
@@ -139,7 +187,7 @@ async function startSearch() {
     errorMsg = 'Something went wrong fetching results. Some recommendations may be missing.';
   }
 
-  const scored = runEngine(raw, state.answers, state.feedback, state.watched);
+  var scored = runEngine(raw, state.answers, state.feedback, state.watchLater, state.watchingNow);
 
   setState({
     screen:      'results',
@@ -152,320 +200,281 @@ async function startSearch() {
   renderResults(state);
 }
 
-/**
- * Load an additional page of results and merge them in.
- * Triggered by the "Load more" button.
- */
 async function handleLoadMore() {
   if (state.loadingMore) return;
 
-  setState({ loadingMore: true });
-  /* Update just the footer button state without full re-render */
-  const btn = document.getElementById('btn-load-more');
-  if (btn) {
-    btn.disabled    = true;
-    btn.textContent = 'Loading...';
-  }
+  setState({ loadingMore: true }, false);
+  var btn = document.getElementById('btn-load-more');
+  if (btn) { btn.disabled = true; btn.textContent = 'Loading...'; }
 
-  const nextPage    = state.page + 1;
-  const existingIds = new Set(state.results.map(r => r.id));
+  var nextPage    = state.page + 1;
+  var existingIds = new Set(state.results.map(function(r) { return r.id; }));
+  var newItems    = [];
 
-  let newItems = [];
   try {
     newItems = await fetchMoreResults(state.answers, existingIds, nextPage);
   } catch (err) {
     console.warn('[app] fetchMoreResults error:', err);
-    showToast('Could not load more results. Try again.');
-    setState({ loadingMore: false });
-    if (btn) {
-      btn.disabled    = false;
-      btn.textContent = 'Load more';
-    }
+    showToast('Could not load more results.');
+    setState({ loadingMore: false }, false);
+    if (btn) { btn.disabled = false; btn.textContent = 'Load more'; }
     return;
   }
 
   if (!newItems.length) {
     showToast('No more results found.');
-    setState({ loadingMore: false });
-    if (btn) {
-      btn.disabled    = false;
-      btn.textContent = 'Load more';
-    }
+    setState({ loadingMore: false }, false);
+    if (btn) { btn.disabled = false; btn.textContent = 'Load more'; }
     return;
   }
 
-  /* Score the new items using current feedback */
-  const scoredNew = runEngine(
-    newItems,
-    state.answers,
-    state.feedback,
-    state.watched,
+  var scoredNew = runEngine(newItems, state.answers, state.feedback, state.watchLater, state.watchingNow);
+  var merged    = runEngine(
+    state.results.concat(scoredNew),
+    state.answers, state.feedback, state.watchLater, state.watchingNow
   );
 
-  /* Merge and re-sort the full list */
-  const merged = runEngine(
-    [...state.results, ...scoredNew],
-    state.answers,
-    state.feedback,
-    state.watched,
-  );
-
-  setState({
-    results:     merged,
-    page:        nextPage,
-    loadingMore: false,
-  });
-
+  setState({ results: merged, page: nextPage, loadingMore: false });
   renderResults(state);
-  showToast(`${scoredNew.length} more titles added.`);
+  showToast(scoredNew.length + ' more titles added.');
 }
 
-/**
- * Fetch a random page of trending content and prepend it
- * to the results list. Triggered by "Surprise me".
- */
 async function handleSurprise() {
-  const btn = document.getElementById('btn-surprise');
-  if (btn) {
-    btn.disabled    = true;
-    btn.textContent = 'Finding...';
-  }
+  var btn = document.getElementById('btn-surprise');
+  if (btn) { btn.disabled = true; btn.textContent = 'Finding...'; }
 
-  /* Temporarily override vibe to 'surprise' for the fetch */
-  const surpriseAnswers = { ...state.answers, vibe: 'surprise' };
-  const existingIds     = new Set(state.results.map(r => r.id));
+  var surpriseAnswers  = Object.assign({}, state.answers, { vibe: 'surprise' });
+  var existingIds      = new Set(state.results.map(function(r) { return r.id; }));
+  var newItems         = [];
 
-  let newItems = [];
   try {
     newItems = await fetchAllResults(surpriseAnswers);
   } catch (err) {
     console.warn('[app] surprise fetch error:', err);
   }
 
-  const fresh = newItems.filter(item => !existingIds.has(item.id));
+  var fresh = newItems.filter(function(item) { return !existingIds.has(item.id); });
 
   if (!fresh.length) {
     showToast('Nothing new found — try again.');
-    if (btn) {
-      btn.disabled    = false;
-      btn.textContent = 'Surprise me';
-    }
+    if (btn) { btn.disabled = false; btn.textContent = 'Surprise me'; }
     return;
   }
 
-  /* Score surprise items with jitter preserved */
-  const scored = runEngine(fresh, surpriseAnswers, state.feedback, state.watched);
-
-  /* Inject them at the top, re-sort everything */
-  const merged = runEngine(
-    [...scored, ...state.results],
-    state.answers,
-    state.feedback,
-    state.watched,
+  var scored = runEngine(fresh, surpriseAnswers, state.feedback, state.watchLater, state.watchingNow);
+  var merged = runEngine(
+    scored.concat(state.results),
+    state.answers, state.feedback, state.watchLater, state.watchingNow
   );
 
   setState({ results: merged });
   renderResults(state);
-  showToast(`${scored.length} surprise titles added.`);
+  showToast(scored.length + ' surprise titles added.');
 }
 
 
 /* ------------------------------------------------------------
-   4. FEEDBACK & WATCHED
+   5. FEEDBACK
    ------------------------------------------------------------ */
 
-/**
- * Toggle like/dislike feedback for an item.
- * If the user taps the same action twice, it clears.
- * After updating, rescores visible results.
- *
- * @param  {string} id
- * @param  {'like'|'dislike'} action
- */
 function handleFeedback(id, action) {
-  const current = state.feedback[id] || null;
-  const next    = current === action ? null : action;
+  var current = state.feedback[id] || null;
+  var next    = current === action ? null : action;
 
-  const newFeedback = { ...state.feedback, [id]: next };
-  setState({ feedback: newFeedback });
+  var newFeedback         = Object.assign({}, state.feedback);
+  newFeedback[id]         = next;
 
-  /* Re-score and re-sort results in place */
-  const rescored = rescoreAfterFeedback(
-    state.results,
-    state.answers,
-    newFeedback,
-    state.watched,
+  var rescored = rescoreAfterFeedback(
+    state.results, state.answers, newFeedback, state.watchLater, state.watchingNow
   );
-  setState({ results: rescored });
 
-  /* Find the item and update its card */
-  const item = state.results.find(r => r.id === id);
-  if (item) {
-    updateCard(id, item, state.feedback, state.watched, state);
-  }
+  setState({ feedback: newFeedback, results: rescored });
+
+  var item = state.results.find(function(r) { return r.id === id; });
+  if (item) updateCard(id, item, state.feedback, state.watchLater, state.watchingNow, state);
 
   updateHeaderNav(state);
 
-  const msg = next === 'like'
-    ? 'Marked as liked — results adjusted.'
-    : next === 'dislike'
-    ? 'Marked as not for you — results adjusted.'
-    : 'Feedback cleared.';
+  var msg = next === 'like'    ? 'Liked — results adjusted.'
+          : next === 'dislike' ? 'Marked as not for you — results adjusted.'
+          :                      'Feedback cleared.';
   showToast(msg);
 }
 
+
+/* ------------------------------------------------------------
+   6. WATCH LISTS
+   ------------------------------------------------------------ */
+
 /**
- * Toggle watched status for an item.
- * Watched items are excluded from the visible grid.
- *
- * @param  {string} id
+ * Add or remove an item from Watch Later.
+ * Removes from Watching Now if it was there.
+ * @param {string} id
  */
-function handleWatched(id) {
-  const newWatched = new Set(state.watched);
-  const wasWatched = newWatched.has(id);
+function handleWatchLater(id) {
+  var newWatchLater  = new Set(state.watchLater);
+  var newWatchingNow = new Set(state.watchingNow);
+  var wasInLater     = newWatchLater.has(id);
 
-  if (wasWatched) {
-    newWatched.delete(id);
+  if (wasInLater) {
+    newWatchLater.delete(id);
   } else {
-    newWatched.add(id);
+    newWatchLater.add(id);
+    newWatchingNow.delete(id); /* Can't be in both */
   }
 
-  setState({ watched: newWatched });
+  var rescored = rescoreAfterFeedback(
+    state.results, state.answers, state.feedback, newWatchLater, newWatchingNow
+  );
 
-  const item = state.results.find(r => r.id === id);
-  if (item) {
-    updateCard(id, item, state.feedback, newWatched, state);
-  }
+  setState({ watchLater: newWatchLater, watchingNow: newWatchingNow, results: rescored });
 
+  var item = state.results.find(function(r) { return r.id === id; });
+  if (item) updateCard(id, item, state.feedback, state.watchLater, state.watchingNow, state);
   updateHeaderNav(state);
-  showToast(wasWatched ? 'Removed from watched.' : 'Marked as watched — hidden from results.');
+
+  showToast(wasInLater ? 'Removed from Watch Later.' : 'Added to Watch Later.');
+}
+
+/**
+ * Add or remove an item from Watching Now.
+ * Removes from Watch Later if it was there.
+ * @param {string} id
+ */
+function handleWatchingNow(id) {
+  var newWatchingNow = new Set(state.watchingNow);
+  var newWatchLater  = new Set(state.watchLater);
+  var wasInNow       = newWatchingNow.has(id);
+
+  if (wasInNow) {
+    newWatchingNow.delete(id);
+  } else {
+    newWatchingNow.add(id);
+    newWatchLater.delete(id); /* Can't be in both */
+  }
+
+  var rescored = rescoreAfterFeedback(
+    state.results, state.answers, state.feedback, newWatchLater, newWatchingNow
+  );
+
+  setState({ watchingNow: newWatchingNow, watchLater: newWatchLater, results: rescored });
+
+  var item = state.results.find(function(r) { return r.id === id; });
+  if (item) updateCard(id, item, state.feedback, state.watchLater, state.watchingNow, state);
+  updateHeaderNav(state);
+
+  showToast(wasInNow ? 'Removed from Watching Now.' : 'Added to Watching Now — influencing your results.');
 }
 
 
 /* ------------------------------------------------------------
-   5. FILTER TABS
+   7. FILTER & RESET
    ------------------------------------------------------------ */
 
-/**
- * Switch the active content-type filter.
- * Only updates the grid section, not the full screen.
- * @param  {string} filter
- */
 function handleFilterChange(filter) {
-  setState({ activeFilter: filter });
-  /* Re-render full results screen — filter change is cheap */
+  setState({ activeFilter: filter }, false);
   renderResults(state);
 }
 
-
-/* ------------------------------------------------------------
-   6. RESET
-   ------------------------------------------------------------ */
-
-/**
- * Reset all state back to the initial quiz screen.
- * Preserves nothing — fresh start.
- */
 function handleRetake() {
+  clearStorage();
   state = deepCloneState(INITIAL_STATE);
   renderQuiz(state.qIndex, state.answers);
 }
 
 
-
 /* ------------------------------------------------------------
-   6b. MODAL
+   8. MODAL
    ------------------------------------------------------------ */
 
-/**
- * Open the detail modal for the item with the given id.
- * @param {string} id
- */
 function handleOpenModal(id) {
-  const item = state.results.find(r => r.id === id);
+  var item = state.results.find(function(r) { return r.id === id; });
   if (!item) return;
-  renderModal(item, state.feedback, state.watched);
+  renderModal(item, state.feedback, state.watchLater, state.watchingNow);
 }
 
-/**
- * Close the detail modal.
- */
 function handleCloseModal() {
   closeModal(false);
 }
 
+
 /* ------------------------------------------------------------
-   7. EVENT DELEGATION
-   A single listener on each major container handles all
-   click events via data-* attribute routing.
-   This avoids attaching/detaching dozens of listeners on
-   every render.
+   9. EVENT DELEGATION
    ------------------------------------------------------------ */
 
-/**
- * Route a click event from the #screen container.
- * @param  {MouseEvent} e
- */
 function onScreenClick(e) {
-  const target = e.target.closest('[data-action], [data-value], [data-filter], #btn-next, #btn-back, #btn-retake, #btn-load-more, #btn-surprise');
+  var target = e.target.closest(
+    '[data-action], [data-value], [data-filter], ' +
+    '#btn-next, #btn-back, #btn-retake, #btn-load-more, #btn-surprise'
+  );
   if (!target) return;
 
-  /* Quiz option button */
+  /* Quiz option */
   if (target.dataset.value !== undefined && state.screen === 'quiz') {
-    const q    = QUESTIONS[state.qIndex];
+    var q = QUESTIONS[state.qIndex];
     handleOptionClick(q.id, target.dataset.value, q.type);
     return;
   }
 
-  /* Quiz navigation */
-  if (target.id === 'btn-next')  { handleNext();  return; }
-  if (target.id === 'btn-back')  { handleBack();  return; }
+  /* Quiz nav */
+  if (target.id === 'btn-next') { handleNext(); return; }
+  if (target.id === 'btn-back') { handleBack(); return; }
 
-  /* Modal open */
-  if (target.dataset.action === 'open-modal') { handleOpenModal(target.dataset.id); return; }
+  /* Card / modal actions */
+  var action = target.dataset.action;
+  var id     = target.dataset.id;
 
-  /* Results actions */
-  if (target.dataset.action === 'like')    { handleFeedback(target.dataset.id, 'like');    return; }
-  if (target.dataset.action === 'dislike') { handleFeedback(target.dataset.id, 'dislike'); return; }
-  if (target.dataset.action === 'watched') { handleWatched(target.dataset.id);             return; }
+  if (action === 'open-modal')   { handleOpenModal(id);              return; }
+  if (action === 'like')         { handleFeedback(id, 'like');       return; }
+  if (action === 'dislike')      { handleFeedback(id, 'dislike');    return; }
+  if (action === 'watch-later')  { handleWatchLater(id);             return; }
+  if (action === 'watching-now') { handleWatchingNow(id);            return; }
 
   /* Filter tabs */
   if (target.dataset.filter !== undefined) { handleFilterChange(target.dataset.filter); return; }
 
-  /* Footer buttons */
-  if (target.id === 'btn-retake')    { handleRetake();     return; }
-  if (target.id === 'btn-load-more') { handleLoadMore();   return; }
-  if (target.id === 'btn-surprise')  { handleSurprise();   return; }
+  /* Footer */
+  if (target.id === 'btn-retake')    { handleRetake();   return; }
+  if (target.id === 'btn-load-more') { handleLoadMore(); return; }
+  if (target.id === 'btn-surprise')  { handleSurprise(); return; }
 }
 
-/**
- * Route a click event from the #site-header.
- * @param  {MouseEvent} e
- */
 function onHeaderClick(e) {
-  const target = e.target.closest('#nav-retake, #logo-link');
+  var target = e.target.closest('#nav-retake, #logo-link');
   if (!target) return;
-
-  if (target.id === 'nav-retake' || target.id === 'logo-link') {
-    e.preventDefault();
-    handleRetake();
-  }
+  e.preventDefault();
+  handleRetake();
 }
 
-/**
- * Handle keyboard shortcuts.
- * @param  {KeyboardEvent} e
- */
+function onBodyClick(e) {
+  /* Modal close button */
+  if (e.target.closest('#modal-close-btn')) { handleCloseModal(); return; }
+
+  /* Backdrop click */
+  var overlay = document.getElementById('modal-overlay');
+  if (overlay && e.target === overlay) { handleCloseModal(); return; }
+
+  /* Modal action buttons */
+  var btn = e.target.closest('.modal-action-btn[data-action]');
+  if (!btn) return;
+
+  var action = btn.dataset.action;
+  var id     = btn.dataset.id;
+  if (!id) return;
+
+  if (action === 'like')         { handleFeedback(id, 'like');    refreshModalActions(id, state.feedback, state.watchLater, state.watchingNow); return; }
+  if (action === 'dislike')      { handleFeedback(id, 'dislike'); refreshModalActions(id, state.feedback, state.watchLater, state.watchingNow); return; }
+  if (action === 'watch-later')  { handleWatchLater(id);          refreshModalActions(id, state.feedback, state.watchLater, state.watchingNow); return; }
+  if (action === 'watching-now') { handleWatchingNow(id);         refreshModalActions(id, state.feedback, state.watchLater, state.watchingNow); return; }
+}
+
 function onKeyDown(e) {
-  /* Escape closes the modal if open */
   if (e.key === 'Escape') {
-    const overlay = document.getElementById('modal-overlay');
+    var overlay = document.getElementById('modal-overlay');
     if (overlay) { handleCloseModal(); return; }
   }
-
-  /* Enter / Space on the #screen advances the quiz if applicable */
   if ((e.key === 'Enter' || e.key === ' ') && state.screen === 'quiz') {
-    const focused = document.activeElement;
+    var focused = document.activeElement;
     if (focused && focused.id === 'screen') {
       e.preventDefault();
       handleNext();
@@ -474,63 +483,49 @@ function onKeyDown(e) {
 }
 
 
-
-/**
- * Handle clicks on document.body — routes modal overlay and
- * modal action buttons which live outside #screen.
- * @param {MouseEvent} e
- */
-function onBodyClick(e) {
-  /* Close button inside modal */
-  if (e.target.closest('#modal-close-btn')) {
-    handleCloseModal();
-    return;
-  }
-
-  /* Click on the overlay backdrop (outside the panel) */
-  const overlay = document.getElementById('modal-overlay');
-  if (overlay && e.target === overlay) {
-    handleCloseModal();
-    return;
-  }
-
-  /* Action buttons inside the modal */
-  const btn = e.target.closest('.modal-action-btn[data-action]');
-  if (!btn) return;
-
-  const action = btn.dataset.action;
-  const id     = btn.dataset.id;
-  if (!id) return;
-
-  if (action === 'like')    { handleFeedback(id, 'like');    refreshModalActions(id, state.feedback, state.watched); return; }
-  if (action === 'dislike') { handleFeedback(id, 'dislike'); refreshModalActions(id, state.feedback, state.watched); return; }
-  if (action === 'watched') { handleWatched(id);             refreshModalActions(id, state.feedback, state.watched); return; }
-}
-
 /* ------------------------------------------------------------
-   8. INITIALISATION
+   10. INITIALISATION
    ------------------------------------------------------------ */
 
-/**
- * Boot the app once the DOM is ready.
- */
 function init() {
-  /* Attach delegated event listeners */
-  const screen = document.getElementById('screen');
-  const header = document.getElementById('site-header');
+  /* Restore persisted state if available */
+  var saved = loadFromStorage();
+  if (saved) {
+    state = deepCloneState(Object.assign({}, INITIAL_STATE, saved, {
+      qIndex:      0,
+      loadingMore: false,
+      error:       null,
+    }));
 
+    /* If we have results, re-score them with current lists and go straight
+       to results screen. Otherwise start the quiz. */
+    if (saved.screen === 'results' && saved.results.length) {
+      var rescored = runEngine(
+        state.results, state.answers, state.feedback, state.watchLater, state.watchingNow
+      );
+      state.results = rescored;
+      state.screen  = 'results';
+    } else {
+      state.screen = 'quiz';
+    }
+  }
+
+  /* Attach events */
+  var screen = document.getElementById('screen');
+  var header = document.getElementById('site-header');
   if (screen) screen.addEventListener('click', onScreenClick);
   if (header) header.addEventListener('click', onHeaderClick);
   document.addEventListener('keydown', onKeyDown);
-
-  /* Modal events — delegated on document.body since modal is outside #screen */
   document.body.addEventListener('click', onBodyClick);
 
-  /* Render initial quiz screen */
-  renderQuiz(state.qIndex, state.answers);
+  /* Render correct screen */
+  if (state.screen === 'results') {
+    renderResults(state);
+  } else {
+    renderQuiz(state.qIndex, state.answers);
+  }
 }
 
-/* Run after the DOM is fully parsed */
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', init);
 } else {
