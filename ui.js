@@ -517,8 +517,19 @@ function renderResults(state) {
         <button class="btn btn-ghost" id="btn-load-more" ${loadingMore ? 'disabled aria-disabled="true"' : ''}>
           ${loadingMore ? 'Loading...' : 'Load more'}
         </button>
-        <button class="btn btn-outline" id="btn-surprise">
-          Surprise me
+        <button class="btn btn-outline" id="btn-surprise">Surprise me</button>
+        <button
+          class="btn ${state.exploreMode ? 'btn-primary' : 'btn-ghost'} explore-btn"
+          id="btn-explore"
+          aria-pressed="${state.exploreMode ? 'true' : 'false'}"
+          title="Loosen genre matching to discover outside your comfort zone"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="10"/>
+            <path d="M12 8l4 4-4 4M8 12h8"/>
+          </svg>
+          ${state.exploreMode ? 'Exploring' : 'Explore mode'}
         </button>
       </footer>
     </section>`;
@@ -789,6 +800,24 @@ function renderModal(item, feedback, watchLater, watchingNow) {
               </svg>
               Not for me
             </button>
+
+            <button
+              class="modal-action-btn"
+              data-action="share"
+              data-id="${escAttr(item.id)}"
+              aria-label="Share ${escAttr(item.title)}"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+                   stroke="currentColor" stroke-width="2"
+                   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="18" cy="5" r="3"/>
+                <circle cx="6" cy="12" r="3"/>
+                <circle cx="18" cy="19" r="3"/>
+                <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/>
+                <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+              </svg>
+              Share
+            </button>
           </div>
         </div>
       </div>
@@ -885,7 +914,7 @@ function refreshModalActions(itemId, feedback, watchLater, watchingNow) {
  * @param  {object} state
  */
 function renderListScreen(view, state) {
-  const { results, feedback, watchLater, watchingNow } = state;
+  const { results, allItems, feedback, watchLater, watchingNow } = state;
   const isWatchingNow = view === 'watching-now';
   const listSet       = isWatchingNow ? watchingNow : watchLater;
   const title         = isWatchingNow ? 'Watching Now' : 'Watch Later';
@@ -893,8 +922,10 @@ function renderListScreen(view, state) {
     ? 'Mark something as Watching Now from your recommendations.'
     : 'Save titles to watch later from your recommendations.';
 
-  /* Find matching items from results pool */
-  const items = results.filter(r => listSet.has(r.id));
+  /* Find matching items from full pool (allItems includes watch-listed items
+     that engine.js removes from the recommendations feed) */
+  const pool  = state.allItems && state.allItems.length ? state.allItems : results;
+  const items = pool.filter(r => listSet.has(r.id));
 
   /* Build cards */
   let gridHtml;

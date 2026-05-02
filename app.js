@@ -28,14 +28,19 @@ function saveToStorage(s) {
       watchingNow: [...s.watchingNow],
       /* Persist the full results pool so reopening doesn't require
          a new API fetch. Items are large-ish, so cap at 60. */
+      allItems:    (s.allItems || []).slice(0, 120).map(function(item) {
+        var copy = Object.assign({}, item);
+        delete copy.score;
+        return copy;
+      }),
       results:     s.results.slice(0, 60).map(function(item) {
-        /* Drop the computed score — it gets recalculated on load */
         var copy = Object.assign({}, item);
         delete copy.score;
         return copy;
       }),
       activeFilter: s.activeFilter,
       activeView:   s.activeView,
+      exploreMode:  s.exploreMode,
       page:         s.page,
       /* Store screen so we can restore to results if applicable */
       screen:       s.screen === 'results' ? 'results' : 'quiz',
@@ -62,9 +67,11 @@ function loadFromStorage() {
       feedback:    data.feedback    || {},
       watchLater:  new Set(data.watchLater  || []),
       watchingNow: new Set(data.watchingNow || []),
+      allItems:    data.allItems    || [],
       results:     data.results     || [],
       activeFilter:data.activeFilter || 'all',
       activeView:  data.activeView  || 'results',
+      exploreMode: data.exploreMode || false,
       page:        data.page        || 1,
       screen:      data.screen      || 'quiz',
     };
@@ -90,12 +97,14 @@ const INITIAL_STATE = {
   screen:      'quiz',
   qIndex:      0,
   answers:     {},
-  results:     [],
+  allItems:    [],   // full pool including watch-listed items
+  results:     [],   // filtered + scored recommendations feed
   feedback:    {},
   watchLater:  new Set(),
   watchingNow: new Set(),
   activeFilter:'all',
   activeView:  'results',
+  exploreMode: false,
   loadingMore: false,
   error:       null,
   page:        1,
@@ -111,6 +120,7 @@ let state = deepCloneState(INITIAL_STATE);
 function deepCloneState(src) {
   return Object.assign({}, src, {
     answers:     Object.assign({}, src.answers),
+    allItems:    (src.allItems || []).slice(),
     results:     (src.results  || []).slice(),
     feedback:    Object.assign({}, src.feedback),
     watchLater:  new Set(src.watchLater),
@@ -190,12 +200,14 @@ async function startSearch() {
     errorMsg = 'Something went wrong fetching results. Some recommendations may be missing.';
   }
 
-  var scored = runEngine(raw, state.answers, state.feedback, state.watchLater, state.watchingNow);
+  var scored = runEngine(raw, state.answers, state.feedback, state.watchLater, state.watchingNow, state.exploreMode);
 
   setState({
     screen:      'results',
+    allItems:    raw,
     results:     scored,
     activeFilter:'all',
+    activeView:  'results',
     page:        1,
     error:       errorMsg,
   });
@@ -288,7 +300,7 @@ function handleFeedback(id, action) {
   newFeedback[id]         = next;
 
   var rescored = rescoreAfterFeedback(
-    state.results, state.answers, newFeedback, state.watchLater, state.watchingNow
+    state.allItems, state.answers, newFeedback, state.watchLater, state.watchingNow, state.exploreMode
   );
 
   setState({ feedback: newFeedback, results: rescored });
@@ -327,7 +339,7 @@ function handleWatchLater(id) {
   }
 
   var rescored = rescoreAfterFeedback(
-    state.results, state.answers, state.feedback, newWatchLater, newWatchingNow
+    state.allItems, state.answers, state.feedback, newWatchLater, newWatchingNow, state.exploreMode
   );
 
   setState({ watchLater: newWatchLater, watchingNow: newWatchingNow, results: rescored });
@@ -357,7 +369,7 @@ function handleWatchingNow(id) {
   }
 
   var rescored = rescoreAfterFeedback(
-    state.results, state.answers, state.feedback, newWatchLater, newWatchingNow
+    state.allItems, state.answers, state.feedback, newWatchLater, newWatchingNow, state.exploreMode
   );
 
   setState({ watchingNow: newWatchingNow, watchLater: newWatchLater, results: rescored });
@@ -369,6 +381,43 @@ function handleWatchingNow(id) {
   showToast(wasInNow ? 'Removed from Watching Now.' : 'Added to Watching Now — influencing your results.');
 }
 
+
+
+/* ------------------------------------------------------------
+   EXPLORE MODE TOGGLE
+   ------------------------------------------------------------ */
+function handleExploreToggle() {
+  var next = !state.exploreMode;
+  var rescored = rescoreAfterFeedback(
+    state.allItems, state.answers, state.feedback,
+    state.watchLater, state.watchingNow, next
+  );
+  setState({ exploreMode: next, results: rescored });
+  renderResults(state);
+  showToast(next ? 'Explore mode on — comfort zone loosened.' : 'Explore mode off.');
+}
+
+/* ------------------------------------------------------------
+   SHARE
+   ------------------------------------------------------------ */
+function handleShare(id) {
+  var item = (state.allItems || []).find(function(r) { return r.id === id; })
+          || state.results.find(function(r) { return r.id === id; });
+  if (!item) return;
+
+  var text = item.title + (item.year ? ' (' + item.year + ')' : '');
+  var shareData = { title: item.title, text: 'Check this out: ' + text, url: window.location.href };
+
+  if (navigator.share && navigator.canShare && navigator.canShare(shareData)) {
+    navigator.share(shareData).catch(function() {});
+  } else {
+    navigator.clipboard.writeText(text).then(function() {
+      showToast('Title copied to clipboard.');
+    }).catch(function() {
+      showToast(text);
+    });
+  }
+}
 
 /* ------------------------------------------------------------
    7. FILTER & RESET
@@ -405,7 +454,8 @@ function handleBackToResults() {
    ------------------------------------------------------------ */
 
 function handleOpenModal(id) {
-  var item = state.results.find(function(r) { return r.id === id; });
+  var item = state.results.find(function(r) { return r.id === id; })
+          || (state.allItems || []).find(function(r) { return r.id === id; });
   if (!item) return;
   renderModal(item, state.feedback, state.watchLater, state.watchingNow);
 }
@@ -456,6 +506,8 @@ function onScreenClick(e) {
   /* Footer */
   if (target.id === 'btn-retake')        { handleRetake();        return; }
   if (target.id === 'btn-back-results')  { handleBackToResults(); return; }
+  if (target.id === 'btn-explore')       { handleExploreToggle(); return; }
+  if (action === 'share')                { handleShare(id);       return; }
   if (target.id === 'btn-load-more') { handleLoadMore(); return; }
   if (target.id === 'btn-surprise')  { handleSurprise(); return; }
 }
@@ -489,10 +541,12 @@ function onBodyClick(e) {
   var id     = btn.dataset.id;
   if (!id) return;
 
+  if (action === 'share')        { handleShare(id); return; }
   if (action === 'like')         { handleFeedback(id, 'like');    refreshModalActions(id, state.feedback, state.watchLater, state.watchingNow); return; }
   if (action === 'dislike')      { handleFeedback(id, 'dislike'); refreshModalActions(id, state.feedback, state.watchLater, state.watchingNow); return; }
   if (action === 'watch-later')  { handleWatchLater(id);          refreshModalActions(id, state.feedback, state.watchLater, state.watchingNow); return; }
   if (action === 'watching-now') { handleWatchingNow(id);         refreshModalActions(id, state.feedback, state.watchLater, state.watchingNow); return; }
+  if (action === 'share')        { handleShare(id); return; }
 }
 
 function onKeyDown(e) {
@@ -527,8 +581,10 @@ function init() {
     /* If we have results, re-score them with current lists and go straight
        to results screen. Otherwise start the quiz. */
     if (saved.screen === 'results' && saved.results.length) {
+      /* Restore allItems — use stored allItems or fall back to results */
+      if (!state.allItems.length) state.allItems = state.results.slice();
       var rescored = runEngine(
-        state.results, state.answers, state.feedback, state.watchLater, state.watchingNow
+        state.allItems, state.answers, state.feedback, state.watchLater, state.watchingNow, state.exploreMode
       );
       state.results = rescored;
       state.screen  = 'results';

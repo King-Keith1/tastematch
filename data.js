@@ -12,7 +12,7 @@
 
 const TMDB_BASE   = 'https://api.themoviedb.org/3';
 const TMDB_IMG    = 'https://image.tmdb.org/t/p/w342';
-const TMDB_KEY    = '8265bd1679663a7ea12ac168da84d2e8'; // public read-only demo key
+const TMDB_KEY    = '45f6e60dac1d8adf3c269126be371fb7'; 
 
 /* TMDB genre IDs for movies */
 const TMDB_MOVIE_GENRES = {

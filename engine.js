@@ -54,19 +54,21 @@ function passesQualityFilter(item) {
 
 /**
  * Filter a full result set against hard requirements.
- * Also removes any IDs in the watched set.
+ * Excludes items the user has added to Watch Later or Watching Now.
  *
  * @param  {object[]} items
  * @param  {object}   answers
- * @param  {Set}      watchedIds
+ * @param  {Set}      watchLater     — ids saved for later
+ * @param  {Set}      watchingNow    — ids currently being watched
  * @returns {object[]}
  */
-function applyHardFilters(items, answers, watchedIds) {
+function applyHardFilters(items, answers, watchLater, watchingNow) {
   const maturity = answers.maturity || 'teen';
 
   return items.filter(item => {
-    if (watchedIds.has(item.id))             return false;
-    if (!passesQualityFilter(item))          return false;
+    if (watchLater.has(item.id))               return false;
+    if (watchingNow.has(item.id))              return false;
+    if (!passesQualityFilter(item))            return false;
     if (!passesMaturityFilter(item, maturity)) return false;
     return true;
   });
@@ -201,26 +203,69 @@ function scoreFeedback(item, feedback) {
 }
 
 /**
+ * Score genre affinity based on what the user is Watching Now.
+ * Items whose genres overlap with anything in watchingNow get
+ * a bonus — the engine infers taste from active viewing choices.
+ * Watch Later gets a smaller signal (intent, not confirmed taste).
+ *
+ * @param  {object}   item
+ * @param  {object[]} allItems      — full results pool (to look up genres)
+ * @param  {Set}      watchingNow
+ * @param  {Set}      watchLater
+ * @returns {number}
+ */
+function scoreListAffinity(item, allItems, watchingNow, watchLater) {
+  if (!watchingNow.size && !watchLater.size) return 0;
+
+  /* Build a genre fingerprint from the user's lists */
+  const nowGenres    = new Set();
+  const laterGenres  = new Set();
+
+  for (const other of allItems) {
+    if (watchingNow.has(other.id)) {
+      (other.genres || []).forEach(g => nowGenres.add(String(g)));
+    }
+    if (watchLater.has(other.id)) {
+      (other.genres || []).forEach(g => laterGenres.add(String(g)));
+    }
+  }
+
+  const itemGenres = (item.genres || []).map(g => String(g));
+  let bonus = 0;
+
+  for (const g of itemGenres) {
+    if (nowGenres.has(g))   bonus += 8;   // strong signal
+    if (laterGenres.has(g)) bonus += 4;   // weaker signal
+  }
+
+  return Math.min(bonus, 24); // cap contribution
+}
+
+/**
  * Calculate the final match score for a single item.
  * Score is clamped to [1, 99].
  *
- * @param  {object} item
- * @param  {object} answers
- * @param  {object} feedback
+ * @param  {object}   item
+ * @param  {object}   answers
+ * @param  {object}   feedback
+ * @param  {object[]} allItems     — full pool, for list affinity
+ * @param  {Set}      watchingNow
+ * @param  {Set}      watchLater
  * @returns {number}
  */
-function calculateScore(item, answers, feedback) {
+function calculateScore(item, answers, feedback, allItems, watchingNow, watchLater) {
   const selectedGenres = answers.genres || [];
   const mood           = answers.mood   || null;
   const vibe           = answers.vibe   || 'quality';
 
-  const base     = scoreRating(item);
-  const genre    = scoreGenreMatch(item, selectedGenres);
-  const moodBonus = scoreMoodMatch(item, mood);
-  const vibeBonus = scoreVibe(item, vibe);
-  const fbAdjust  = scoreFeedback(item, feedback);
+  const base        = scoreRating(item);
+  const genre       = scoreGenreMatch(item, selectedGenres);
+  const moodBonus   = scoreMoodMatch(item, mood);
+  const vibeBonus   = scoreVibe(item, vibe);
+  const fbAdjust    = scoreFeedback(item, feedback);
+  const listAffinity = scoreListAffinity(item, allItems, watchingNow, watchLater);
 
-  const raw = base + genre + moodBonus + vibeBonus + fbAdjust;
+  const raw = base + genre + moodBonus + vibeBonus + fbAdjust + listAffinity;
   return Math.max(1, Math.min(99, Math.round(raw)));
 }
 
@@ -233,9 +278,11 @@ function calculateScore(item, answers, feedback) {
  * @param  {object}   feedback
  * @returns {object[]}
  */
-function scoreAll(items, answers, feedback) {
+function scoreAll(items, answers, feedback, watchingNow, watchLater) {
+  const wn = watchingNow || new Set();
+  const wl = watchLater  || new Set();
   for (const item of items) {
-    item.score = calculateScore(item, answers, feedback);
+    item.score = calculateScore(item, answers, feedback, items, wn, wl);
   }
   return items;
 }
@@ -342,17 +389,23 @@ function enforceVariety(sorted, types, maxRun = 3) {
 
 /**
  * Re-score and re-sort an existing result array after feedback
- * changes. Watched items are removed from the returned array.
+ * or list changes.
  *
  * @param  {object[]} items
  * @param  {object}   answers
  * @param  {object}   feedback
- * @param  {Set}      watchedIds
+ * @param  {Set}      watchLater
+ * @param  {Set}      watchingNow
  * @returns {object[]}
  */
-function rescoreAfterFeedback(items, answers, feedback, watchedIds) {
-  const active = items.filter(item => !watchedIds.has(item.id));
-  scoreAll(active, answers, feedback);
+function rescoreAfterFeedback(items, answers, feedback, watchLater, watchingNow, exploreMode) {
+  const wl = watchLater  || new Set();
+  const wn = watchingNow || new Set();
+  const active = items.filter(item => !wl.has(item.id) && !wn.has(item.id));
+  const scoreAnswers = exploreMode
+    ? Object.assign({}, answers, { genres: [], mood: null })
+    : answers;
+  scoreAll(active, scoreAnswers, feedback, wn, wl);
   const types = answers.types || ['movie'];
   const sorted = sortByScore(active);
   return enforceVariety(sorted, types);
@@ -368,22 +421,32 @@ function rescoreAfterFeedback(items, answers, feedback, watchedIds) {
 /**
  * Run the complete recommendation pipeline.
  *
- * @param  {object[]} rawItems    — normalised items from api.js
- * @param  {object}   answers     — quiz answers map
- * @param  {object}   feedback    — feedback map (may be empty)
- * @param  {Set}      watchedIds  — ids to exclude
- * @returns {object[]}            — final ordered recommendation list
+ * @param  {object[]} rawItems     — normalised items from api.js
+ * @param  {object}   answers      — quiz answers map
+ * @param  {object}   feedback     — feedback map (may be empty)
+ * @param  {Set}      watchLater   — ids to exclude (saved for later)
+ * @param  {Set}      watchingNow  — ids to exclude (currently watching)
+ * @returns {object[]}             — final ordered recommendation list
  */
-function runEngine(rawItems, answers, feedback, watchedIds) {
+function runEngine(rawItems, answers, feedback, watchLater, watchingNow, exploreMode) {
   if (!rawItems.length) return [];
 
+  const wl    = watchLater  || new Set();
+  const wn    = watchingNow || new Set();
   const types = answers.types || ['movie'];
 
-  /* Step 1: hard filters */
-  const filtered = applyHardFilters(rawItems, answers, watchedIds);
+  /* In explore mode loosen genre filtering by using a diluted answers
+     copy with genres cleared — scoring still works but genre bonus is
+     zero, so low-genre-overlap items rank higher relative to each other */
+  const scoreAnswers = exploreMode
+    ? Object.assign({}, answers, { genres: [], mood: null })
+    : answers;
+
+  /* Step 1: hard filters (same regardless of explore mode) */
+  const filtered = applyHardFilters(rawItems, answers, wl, wn);
 
   /* Step 2: score */
-  scoreAll(filtered, answers, feedback);
+  scoreAll(filtered, scoreAnswers, feedback, wn, wl);
 
   /* Step 3: sort */
   const sorted = sortByScore(filtered);

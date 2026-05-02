@@ -1308,3 +1308,34 @@ body::before {
 .nav-btn.active.nav-btn-empty {
   opacity: 1;
 }
+
+/* ------------------------------------------------------------
+   16. EXPLORE MODE
+   ------------------------------------------------------------ */
+
+.explore-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Active explore mode — pulse border to signal it's on */
+.explore-btn[aria-pressed="true"] {
+  position: relative;
+}
+
+.explore-btn[aria-pressed="true"]::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: calc(var(--r-m) + 2px);
+  border: 1.5px solid var(--accent);
+  opacity: 0.5;
+  animation: explore-pulse 2s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes explore-pulse {
+  0%, 100% { opacity: 0.5; transform: scale(1); }
+  50%       { opacity: 0.2; transform: scale(1.02); }
+}
