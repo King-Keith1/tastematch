@@ -35,6 +35,7 @@ function saveToStorage(s) {
         return copy;
       }),
       activeFilter: s.activeFilter,
+      activeView:   s.activeView,
       page:         s.page,
       /* Store screen so we can restore to results if applicable */
       screen:       s.screen === 'results' ? 'results' : 'quiz',
@@ -63,6 +64,7 @@ function loadFromStorage() {
       watchingNow: new Set(data.watchingNow || []),
       results:     data.results     || [],
       activeFilter:data.activeFilter || 'all',
+      activeView:  data.activeView  || 'results',
       page:        data.page        || 1,
       screen:      data.screen      || 'quiz',
     };
@@ -93,6 +95,7 @@ const INITIAL_STATE = {
   watchLater:  new Set(),
   watchingNow: new Set(),
   activeFilter:'all',
+  activeView:  'results',
   loadingMore: false,
   error:       null,
   page:        1,
@@ -376,10 +379,24 @@ function handleFilterChange(filter) {
   renderResults(state);
 }
 
+function handleViewChange(view) {
+  setState({ activeView: view }, false);
+  if (view === 'results') {
+    renderResults(state);
+  } else {
+    renderListScreen(view, state);
+  }
+}
+
 function handleRetake() {
   clearStorage();
   state = deepCloneState(INITIAL_STATE);
   renderQuiz(state.qIndex, state.answers);
+}
+
+function handleBackToResults() {
+  setState({ activeView: 'results' }, false);
+  renderResults(state);
 }
 
 
@@ -404,8 +421,8 @@ function handleCloseModal() {
 
 function onScreenClick(e) {
   var target = e.target.closest(
-    '[data-action], [data-value], [data-filter], ' +
-    '#btn-next, #btn-back, #btn-retake, #btn-load-more, #btn-surprise'
+    '[data-action], [data-value], [data-filter], [data-nav-view], ' +
+    '#btn-next, #btn-back, #btn-retake, #btn-load-more, #btn-surprise, #btn-back-results'
   );
   if (!target) return;
 
@@ -433,15 +450,25 @@ function onScreenClick(e) {
   /* Filter tabs */
   if (target.dataset.filter !== undefined) { handleFilterChange(target.dataset.filter); return; }
 
+  /* View switching (For You / Watching Now / Watch Later) */
+  if (target.dataset.navView !== undefined) { handleViewChange(target.dataset.navView); return; }
+
   /* Footer */
-  if (target.id === 'btn-retake')    { handleRetake();   return; }
+  if (target.id === 'btn-retake')        { handleRetake();        return; }
+  if (target.id === 'btn-back-results')  { handleBackToResults(); return; }
   if (target.id === 'btn-load-more') { handleLoadMore(); return; }
   if (target.id === 'btn-surprise')  { handleSurprise(); return; }
 }
 
 function onHeaderClick(e) {
-  var target = e.target.closest('#nav-retake, #logo-link');
+  var target = e.target.closest('#nav-retake, #logo-link, [data-nav-view]');
   if (!target) return;
+
+  if (target.dataset.navView) {
+    handleViewChange(target.dataset.navView);
+    return;
+  }
+
   e.preventDefault();
   handleRetake();
 }
@@ -520,7 +547,11 @@ function init() {
 
   /* Render correct screen */
   if (state.screen === 'results') {
-    renderResults(state);
+    if (state.activeView && state.activeView !== 'results') {
+      renderListScreen(state.activeView, state);
+    } else {
+      renderResults(state);
+    }
   } else {
     renderQuiz(state.qIndex, state.answers);
   }

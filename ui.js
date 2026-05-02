@@ -103,21 +103,33 @@ function renderPoster(item) {
 function renderHeaderNav(screen, state) {
   let html = '';
 
-  if (screen === 'results') {
-    const laterCount  = (state.watchLater  || new Set()).size;
-    const nowCount    = (state.watchingNow || new Set()).size;
-    const likedCount  = Object.values(state.feedback).filter(v => v === 'like').length;
+  if (screen === 'results' || screen === 'list') {
+    const laterCount   = (state.watchLater  || new Set()).size;
+    const nowCount     = (state.watchingNow || new Set()).size;
+    const activeView   = state.activeView || 'results';
 
-    if (nowCount > 0) {
-      html += `<span class="nav-btn nav-btn-now" aria-live="polite">${nowCount} watching</span>`;
-    }
-    if (laterCount > 0) {
-      html += `<span class="nav-btn" aria-live="polite">${laterCount} saved</span>`;
-    }
-    if (likedCount > 0) {
-      html += `<span class="nav-btn active" aria-live="polite">${likedCount} liked</span>`;
-    }
-    html += `<button class="nav-btn" id="nav-retake">Retake quiz</button>`;
+    /* Recommendations link */
+    html += `<button
+      class="nav-btn${activeView === 'results' ? ' active' : ''}"
+      data-nav-view="results"
+      aria-pressed="${activeView === 'results'}"
+    >For You</button>`;
+
+    /* Watching Now — always show, greyed if empty */
+    html += `<button
+      class="nav-btn nav-btn-now${activeView === 'watching-now' ? ' active' : ''}${nowCount === 0 ? ' nav-btn-empty' : ''}"
+      data-nav-view="watching-now"
+      aria-pressed="${activeView === 'watching-now'}"
+    >Watching${nowCount > 0 ? ` (${nowCount})` : ''}</button>`;
+
+    /* Watch Later — always show, greyed if empty */
+    html += `<button
+      class="nav-btn${activeView === 'watch-later' ? ' active' : ''}${laterCount === 0 ? ' nav-btn-empty' : ''}"
+      data-nav-view="watch-later"
+      aria-pressed="${activeView === 'watch-later'}"
+    >Watch Later${laterCount > 0 ? ` (${laterCount})` : ''}</button>`;
+
+    html += `<button class="nav-btn" id="nav-retake">Retake</button>`;
   }
 
   setHtml('#header-nav', html);
@@ -856,4 +868,67 @@ function refreshModalActions(itemId, feedback, watchLater, watchingNow) {
       svg.setAttribute('fill', filled ? 'currentColor' : 'none');
     }
   });
+}
+
+
+/* ------------------------------------------------------------
+   9. LIST SCREENS (Watch Later / Watching Now)
+   ------------------------------------------------------------ */
+
+/**
+ * Render the Watch Later or Watching Now list screen.
+ * Shows all items in the given set as full cards.
+ * Items not in state.results (e.g. added then results refreshed)
+ * are shown with whatever data we have stored.
+ *
+ * @param  {'watch-later'|'watching-now'} view
+ * @param  {object} state
+ */
+function renderListScreen(view, state) {
+  const { results, feedback, watchLater, watchingNow } = state;
+  const isWatchingNow = view === 'watching-now';
+  const listSet       = isWatchingNow ? watchingNow : watchLater;
+  const title         = isWatchingNow ? 'Watching Now' : 'Watch Later';
+  const emptyLine     = isWatchingNow
+    ? 'Mark something as Watching Now from your recommendations.'
+    : 'Save titles to watch later from your recommendations.';
+
+  /* Find matching items from results pool */
+  const items = results.filter(r => listSet.has(r.id));
+
+  /* Build cards */
+  let gridHtml;
+  if (!items.length) {
+    gridHtml = `<div class="empty-state" role="status">
+      <p class="empty-state-title">Nothing here yet</p>
+      <p>${escHtml(emptyLine)}</p>
+      <button class="btn btn-ghost" style="margin-top:1.5rem" data-nav-view="results">Back to recommendations</button>
+    </div>`;
+  } else {
+    const cards = items
+      .map(item => renderCard(item, feedback, watchLater, watchingNow))
+      .join('\n');
+    gridHtml = `<div class="results-grid" role="list" aria-label="${escAttr(title)}">
+      ${cards}
+    </div>`;
+  }
+
+  const countLabel = items.length === 1 ? '1 title' : `${items.length} titles`;
+
+  const html = `
+    <section aria-label="${escAttr(title)}">
+      <header class="results-header">
+        <h2 class="results-title"><em>${escHtml(title)}</em></h2>
+        <p class="results-meta">${items.length ? countLabel : 'Empty'}</p>
+      </header>
+
+      ${gridHtml}
+
+      ${items.length ? `<footer class="results-footer">
+        <button class="btn btn-ghost" id="btn-back-results">Back to recommendations</button>
+      </footer>` : ''}
+    </section>`;
+
+  setHtml('#screen', html);
+  renderHeaderNav('list', state);
 }

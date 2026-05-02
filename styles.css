@@ -1295,3 +1295,16 @@ body::before {
     grid-template-columns: 1fr 1fr;
   }
 }
+
+/* ------------------------------------------------------------
+   15. NAV VIEW BUTTONS
+   ------------------------------------------------------------ */
+
+.nav-btn-empty {
+  opacity: 0.4;
+}
+
+/* Active view highlight overrides empty */
+.nav-btn.active.nav-btn-empty {
+  opacity: 1;
+}
